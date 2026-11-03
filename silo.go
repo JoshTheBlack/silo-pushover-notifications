@@ -36,6 +36,7 @@ type siloClient struct {
 
 	mu    sync.Mutex
 	cache map[int]cachedProfiles
+	users map[int]cachedUser
 }
 
 // cachedProfiles is one account's profile list, or the key error that
@@ -46,9 +47,20 @@ type cachedProfiles struct {
 	at       time.Time
 }
 
+// cachedUser is one account as Silo reported it, or the error that stopped
+// the lookup. Network errors aren't cached.
+type cachedUser struct {
+	user *siloUser
+	err  error
+	at   time.Time
+}
+
 const (
 	profileCacheTTL = 30 * time.Second
 	siloCallTimeout = 5 * time.Second
+	// userCacheTTL is how long an account's role is trusted before admin
+	// alerts check it again.
+	userCacheTTL = 10 * time.Minute
 )
 
 func newSiloClient() *siloClient {
@@ -57,6 +69,7 @@ func newSiloClient() *siloClient {
 		timeout: siloCallTimeout,
 		now:     time.Now,
 		cache:   map[int]cachedProfiles{},
+		users:   map[int]cachedUser{},
 	}
 }
 
@@ -64,7 +77,92 @@ func newSiloClient() *siloClient {
 func (c *siloClient) Invalidate() {
 	c.mu.Lock()
 	c.cache = map[int]cachedProfiles{}
+	c.users = map[int]cachedUser{}
 	c.mu.Unlock()
+}
+
+// siloUser is the part of Silo's AdminUser the plugin reads.
+type siloUser struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Role     string `json:"role"`
+	Enabled  bool   `json:"enabled"`
+}
+
+// isAdmin reports whether the account is an enabled admin.
+func (u *siloUser) isAdmin() bool { return u != nil && u.Role == "admin" && u.Enabled }
+
+var errSiloUserNotFound = errors.New("Silo has no such account")
+
+// User looks up one account (GET /api/v2/admin/users/{id}, allowed by
+// admin:monitor:read), cached for userCacheTTL. A deleted account is
+// errSiloUserNotFound; key errors are cached like AccountProfiles's.
+func (c *siloClient) User(ctx context.Context, baseURL, apiKey string, userID int) (*siloUser, error) {
+	if apiKey == "" {
+		return nil, errSiloKeyMissing
+	}
+	c.mu.Lock()
+	if cached, ok := c.users[userID]; ok {
+		ttl := userCacheTTL
+		if cached.err != nil && !errors.Is(cached.err, errSiloUserNotFound) {
+			ttl = profileCacheTTL
+		}
+		if c.now().Sub(cached.at) < ttl {
+			c.mu.Unlock()
+			return cached.user, cached.err
+		}
+	}
+	c.mu.Unlock()
+
+	var user siloUser
+	err := c.get(ctx, baseURL, apiKey, "/api/v2/admin/users/"+strconv.Itoa(userID), &user)
+	var serr *siloStatusError
+	switch {
+	case errors.As(err, &serr) && serr.Status == http.StatusNotFound:
+		err = errSiloUserNotFound
+	case err != nil && !errors.Is(err, errSiloKeyRejected) && !errors.Is(err, errSiloKeyScope):
+		return nil, fmt.Errorf("look up account: %w", err)
+	}
+	entry := cachedUser{err: err, at: c.now()}
+	if err == nil {
+		entry.user = &user
+	}
+	c.mu.Lock()
+	c.users[userID] = entry
+	c.mu.Unlock()
+	return entry.user, err
+}
+
+// Users lists every account (GET /api/v2/admin/users), for the page's
+// "ignore users" picker. Not cached.
+func (c *siloClient) Users(ctx context.Context, baseURL, apiKey string) ([]siloUser, error) {
+	if apiKey == "" {
+		return nil, errSiloKeyMissing
+	}
+	var all []siloUser
+	cursor := ""
+	for range 25 {
+		path := "/api/v2/admin/users?limit=200"
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		var page struct {
+			Items []siloUser `json:"items"`
+			Page  *struct {
+				NextCursor string `json:"next_cursor"`
+				HasMore    bool   `json:"has_more"`
+			} `json:"page"`
+		}
+		if err := c.get(ctx, baseURL, apiKey, path, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Items...)
+		if page.Page == nil || !page.Page.HasMore || page.Page.NextCursor == "" {
+			return all, nil
+		}
+		cursor = page.Page.NextCursor
+	}
+	return all, nil
 }
 
 // AccountProfiles lists the profiles of one Silo account

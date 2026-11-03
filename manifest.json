@@ -13,8 +13,8 @@
       "type": "event_consumer.v1",
       "id": "pushover_events",
       "display_name": "Pushover delivery",
-      "description": "Forwards each profile's Silo notifications to Pushover.",
-      "subscriptions": ["notification.created"]
+      "description": "Forwards each profile's Silo notifications to Pushover, and playback alerts to admins who turn them on.",
+      "subscriptions": ["notification.created", "session.started", "session.paused", "session.resumed", "session.stopped"]
     },
     {
       "type": "http_routes.v1",

@@ -53,6 +53,8 @@ type fakePushover struct {
 	mu   sync.Mutex
 	sent []url.Values
 	fail atomic.Int32 // HTTP status to answer messages.json with; 0 = succeed
+	// failUser, when set, makes messages.json answer 503 for that user key.
+	failUser atomic.Value
 	// hold, when set, makes messages.json wait until it is closed or the
 	// request is cancelled.
 	hold chan struct{}
@@ -103,6 +105,11 @@ func (f *fakePushover) handler(w http.ResponseWriter, r *http.Request) {
 			_ = r.ParseForm()
 		}
 		form := r.PostForm
+		if u, _ := f.failUser.Load().(string); u != "" && form.Get("user") == u {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"status":0,"errors":["try later"]}`)
+			return
+		}
 		if r.MultipartForm != nil && len(r.MultipartForm.File["attachment"]) > 0 {
 			form.Set("_attachment", "yes")
 		}
@@ -135,6 +142,15 @@ type harness struct {
 	siloMu    sync.Mutex
 	siloAuth  []string
 	siloDown  atomic.Bool
+	// accounts are the fake Silo's accounts by ID, served as AdminUser rows
+	// built from testdata/admin_user.json. userCalls counts lookups by ID.
+	accounts  map[string]fakeAccount
+	userCalls map[string]int
+}
+
+type fakeAccount struct {
+	username, role string
+	enabled        bool
 }
 
 // testPoster is the image the fake Silo serves at /poster.jpg and /card.jpg.
@@ -160,7 +176,12 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(pushoverSrv.Close)
 
 	slowPoster := make(chan struct{})
-	h := &harness{pushover: fp, pushURL: pushoverSrv.URL}
+	h := &harness{pushover: fp, pushURL: pushoverSrv.URL, userCalls: map[string]int{}, accounts: map[string]fakeAccount{
+		"7":  {"josh", "admin", true},
+		"9":  {"sam", "admin", true},
+		"12": {"alice", "user", true},
+		"13": {"bob", "user", true},
+	}}
 	silo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/poster.jpg", "/card.jpg":
@@ -187,10 +208,33 @@ func newHarness(t *testing.T) *harness {
 			w.WriteHeader(http.StatusForbidden)
 		case r.Header.Get("Authorization") != "Bearer "+testMonitorKey:
 			w.WriteHeader(http.StatusUnauthorized)
-		case r.URL.Path != "/api/v2/admin/users/7/profiles":
-			http.NotFound(w, r)
-		default:
+		case r.URL.Path == "/api/v2/admin/users/7/profiles":
 			_, _ = io.WriteString(w, `{"items":[{"id":"p1","name":"Josh"},{"id":"p2","name":"Kid"},{"id":"p3","name":"Kid"}]}`)
+		case r.URL.Path == "/api/v2/admin/users":
+			h.siloMu.Lock()
+			items := []map[string]any{}
+			for id := range h.accounts {
+				items = append(items, h.accountRow(t, id))
+			}
+			h.siloMu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
+		case strings.HasPrefix(r.URL.Path, "/api/v2/admin/users/"):
+			id := strings.TrimPrefix(r.URL.Path, "/api/v2/admin/users/")
+			h.siloMu.Lock()
+			h.userCalls[id]++
+			_, ok := h.accounts[id]
+			var row map[string]any
+			if ok {
+				row = h.accountRow(t, id)
+			}
+			h.siloMu.Unlock()
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(row)
+		default:
+			http.NotFound(w, r)
 		}
 	}))
 	t.Cleanup(silo.Close)

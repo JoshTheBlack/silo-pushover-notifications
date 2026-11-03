@@ -27,6 +27,8 @@ var indexHTML []byte
 type Plugin struct {
 	logger   *slog.Logger
 	store    *profileStore
+	admins   *adminStore
+	throttle *throttleStore
 	pushover *pushoverClient
 	silo     *siloClient
 	fetch    *http.Client // poster downloads
@@ -38,6 +40,9 @@ type Plugin struct {
 	// configured is set once Silo has called Configure, so the plugin knows
 	// the stored config before it writes it back.
 	configured atomic.Bool
+	// adminKeyWarned is set once a refused read-only key has been logged, so
+	// admin alerts log it once rather than on every event.
+	adminKeyWarned atomic.Bool
 
 	// keys creates and revokes Silo API keys during a key setup.
 	keys *keyAdmin
@@ -72,6 +77,8 @@ func newPlugin(logger *slog.Logger, state stateBackend) *Plugin {
 	return &Plugin{
 		logger:            logger,
 		store:             newProfileStore(state),
+		admins:            newAdminStore(state),
+		throttle:          newThrottleStore(state),
 		pushover:          newPushoverClient(),
 		silo:              newSiloClient(),
 		keys:              newKeyAdmin(),
@@ -96,6 +103,7 @@ func (p *Plugin) setConfig(cfg adminConfig) {
 	p.cfg = cfg
 	p.cfgMu.Unlock()
 	p.silo.Invalidate()
+	p.adminKeyWarned.Store(false)
 }
 
 // host returns the cached host info, refreshing it every minute. Public URLs

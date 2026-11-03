@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -398,28 +399,74 @@ func (l *eventLog) Seen(ctx context.Context, id string) (bool, error) {
 	return false, nil
 }
 
+// SeenMany reports which of ids were recorded, reading each bucket at most
+// once.
+func (l *eventLog) SeenMany(ctx context.Context, ids []string) (map[string]bool, error) {
+	seen := map[string]bool{}
+	buckets := map[string][]string{}
+	for _, id := range ids {
+		entry := eventLogEntry(id)
+		if l.recent.Has(entry) {
+			seen[id] = true
+			continue
+		}
+		key := eventLogKey(entry)
+		stored, ok := buckets[key]
+		if !ok {
+			var err error
+			if stored, err = l.read(ctx, key); err != nil {
+				return nil, err
+			}
+			buckets[key] = stored
+		}
+		if slices.Contains(stored, entry) {
+			l.recent.Add(entry)
+			seen[id] = true
+		}
+	}
+	return seen, nil
+}
+
 // Record adds id, dropping the bucket's oldest IDs past the cap.
 func (l *eventLog) Record(ctx context.Context, id string) error {
-	entry := eventLogEntry(id)
-	l.recent.Add(entry)
+	return l.RecordMany(ctx, []string{id})
+}
+
+// RecordMany adds ids, writing each bucket once.
+func (l *eventLog) RecordMany(ctx context.Context, ids []string) error {
+	byKey := map[string][]string{}
+	for _, id := range ids {
+		entry := eventLogEntry(id)
+		l.recent.Add(entry)
+		byKey[eventLogKey(entry)] = append(byKey[eventLogKey(entry)], entry)
+	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	key := eventLogKey(entry)
-	ids, err := l.read(ctx, key)
-	if err != nil {
-		return err
+	var firstErr error
+	for key, entries := range byKey {
+		stored, err := l.read(ctx, key)
+		if err != nil {
+			firstErr = cmp.Or(firstErr, err)
+			continue
+		}
+		changed := false
+		for _, entry := range entries {
+			if !slices.Contains(stored, entry) {
+				stored, changed = append(stored, entry), true
+			}
+		}
+		if !changed {
+			continue
+		}
+		if len(stored) > eventLogPerBucket {
+			stored = stored[len(stored)-eventLogPerBucket:]
+		}
+		raw, err := json.Marshal(stored)
+		if err == nil {
+			err = l.state.Write(ctx, key, raw)
+		}
+		firstErr = cmp.Or(firstErr, err)
 	}
-	if slices.Contains(ids, entry) {
-		return nil
-	}
-	ids = append(ids, entry)
-	if len(ids) > eventLogPerBucket {
-		ids = ids[len(ids)-eventLogPerBucket:]
-	}
-	raw, err := json.Marshal(ids)
-	if err != nil {
-		return err
-	}
-	return l.state.Write(ctx, key, raw)
+	return firstErr
 }

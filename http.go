@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -239,6 +240,9 @@ func (p *Plugin) serveAPI(ctx context.Context, req *pluginv1.HandleHTTPRequest) 
 		}
 		return p.handleKeySetup(ctx, req)
 	}
+	if len(parts) >= 2 && parts[0] == "admin" {
+		return p.serveAdminAPI(ctx, req, strings.Join(parts[1:], "/"))
+	}
 	if len(parts) < 2 || parts[0] != "profiles" {
 		return errorResponse(apiErr(http.StatusNotFound, "not_found", "Not found."))
 	}
@@ -308,6 +312,9 @@ func (p *Plugin) handleState(ctx context.Context, req *pluginv1.HandleHTTPReques
 	}
 	state["profiles"] = profiles
 	state["household"] = v.household
+	// admin is Silo's acting admin: the page shows the admin section, whose
+	// alerts live under /api/admin/.
+	state["admin"] = v.admin
 	if v.admin {
 		state["admin_keys"] = p.adminKeyStatus()
 	}
@@ -582,6 +589,246 @@ func (p *Plugin) handleValidate(ctx context.Context, prof siloProfile, body []by
 		devices = []string{}
 	}
 	return jsonResponse(http.StatusOK, map[string]any{"devices": devices, "sounds": sounds})
+}
+
+// adminViewer is an acting admin whose read-only key check passed.
+type adminViewer struct {
+	userID    int
+	profileID string
+	username  string
+	base      string // Silo's internal URL
+	key       string // the read-only key
+}
+
+// adminRoutes lists the admin alert routes under /api/admin/ and their
+// methods. POST and PUT bodies are JSON (checked in serveAPI).
+var adminRoutes = map[string][]string{
+	"alerts":      {http.MethodGet, http.MethodPut, http.MethodDelete},
+	"alerts/test": {http.MethodPost},
+	"users":       {http.MethodGet},
+}
+
+// serveAdminAPI answers the admin alert routes. Each needs an acting admin
+// and a working read-only Silo key; without the key it says so.
+func (p *Plugin) serveAdminAPI(ctx context.Context, req *pluginv1.HandleHTTPRequest, route string) *pluginv1.HandleHTTPResponse {
+	methods, ok := adminRoutes[route]
+	if !ok {
+		return errorResponse(apiErr(http.StatusNotFound, "not_found", "Not found."))
+	}
+	method := req.GetMethod()
+	if !slices.Contains(methods, method) {
+		return errorResponse(apiErr(http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed."))
+	}
+	a, aerr := p.resolveAdmin(ctx, req)
+	if aerr != nil {
+		return errorResponse(aerr)
+	}
+	switch route + " " + method {
+	case "alerts GET":
+		return p.handleGetAdminAlerts(ctx, a)
+	case "alerts PUT":
+		return p.handlePutAdminAlerts(ctx, a, req.GetBody())
+	case "alerts DELETE":
+		if err := p.admins.Delete(ctx, a.userID); err != nil {
+			return storeError(p, err)
+		}
+		return jsonResponse(http.StatusOK, map[string]bool{"ok": true})
+	case "alerts/test POST":
+		return p.handleTestAdminAlert(ctx, a, req.GetBody())
+	default: // users GET
+		return p.handleListUsers(ctx, a)
+	}
+}
+
+// resolveAdmin checks that the viewer is an acting admin and that the
+// read-only key works, by looking up the viewer's own account with it.
+func (p *Plugin) resolveAdmin(ctx context.Context, req *pluginv1.HandleHTTPRequest) (*adminViewer, *apiError) {
+	userID, _ := strconv.Atoi(header(req, "X-Silo-User-Id"))
+	if userID <= 0 {
+		return nil, apiErr(http.StatusUnauthorized, "unauthenticated", "Your session for this page has expired. Open Pushover from the Silo sidebar again.")
+	}
+	if header(req, "X-Silo-User-Role") != "admin" {
+		return nil, apiErr(http.StatusForbidden, "forbidden", "Only a server admin, signed in to their primary profile, can set up admin alerts.")
+	}
+	a := &adminViewer{userID: userID, profileID: header(req, "X-Silo-Profile-Id"), username: header(req, "X-Silo-User-Name")}
+	if a.profileID == "" {
+		return nil, apiErr(http.StatusConflict, "no_profile", "Choose a profile in Silo, then open Pushover from the sidebar again.")
+	}
+	a.key = p.config().MonitorAPIKey
+	if a.key == "" {
+		return nil, monitorKeyProblem(errSiloKeyMissing)
+	}
+	info, err := p.host(ctx)
+	if err != nil || info.InternalBaseURL == "" {
+		return nil, apiErr(http.StatusServiceUnavailable, "host_unavailable", "The plugin is still starting. Try again in a moment.")
+	}
+	a.base = strings.TrimRight(info.InternalBaseURL, "/")
+	user, err := p.silo.User(ctx, a.base, a.key, userID)
+	switch {
+	case errors.Is(err, errSiloKeyRejected), errors.Is(err, errSiloKeyScope):
+		return nil, monitorKeyProblem(err)
+	case errors.Is(err, errSiloUserNotFound), err == nil && !user.isAdmin():
+		return nil, apiErr(http.StatusForbidden, "forbidden", "Silo doesn't list your account as an enabled admin, so you can't set up admin alerts.")
+	case err != nil:
+		p.logger.Warn("could not check the admin's account with the read-only Silo key", "user_id", userID, "error", err)
+		return nil, apiErr(http.StatusBadGateway, "silo_unavailable", "Couldn't reach Silo to check the read-only key. Reload the page to try again.")
+	}
+	if a.username == "" {
+		a.username = user.Username
+	}
+	return a, nil
+}
+
+// monitorKeyProblem explains why admin alerts can't run without a working
+// read-only key. The page shows the key setup box for these codes.
+func monitorKeyProblem(err error) *apiError {
+	const fix = " Use “Set up the read-only key” in the admin section of this page, or add a key under " + adminFormPath + "."
+	switch {
+	case errors.Is(err, errSiloKeyRejected):
+		return apiErr(http.StatusConflict, "monitor_key_rejected", "Silo rejected the plugin's read-only Silo key, so no admin alerts are sent. The key may have been revoked."+fix)
+	case errors.Is(err, errSiloKeyScope):
+		return apiErr(http.StatusConflict, "monitor_key_scope", "The plugin's read-only Silo key isn't allowed to look up accounts, so no admin alerts are sent. It needs the admin:monitor:read scope."+fix)
+	}
+	return apiErr(http.StatusConflict, "monitor_key_missing", "Admin alerts need a read-only Silo key (scope admin:monitor:read), which isn't set up yet. The plugin uses it to check that each recipient is still an admin."+fix)
+}
+
+// adminSettingsView fills in every alert type and empty lists, for the page.
+func adminSettingsView(s *AdminSettings) *AdminSettings {
+	v := s.clone()
+	if v.Alerts == nil {
+		v.Alerts = map[string]AlertSettings{}
+	}
+	for _, t := range adminAlertTypes {
+		v.Alerts[t.Key] = s.alert(t.Key)
+	}
+	if v.Filters.IgnoreUsers == nil {
+		v.Filters.IgnoreUsers = []string{}
+	}
+	if v.Filters.MediaTypes == nil {
+		v.Filters.MediaTypes = []string{}
+	}
+	return v
+}
+
+// adminPushoverReady reports whether the admin's profile has a Pushover user
+// key and a token to send with.
+func (p *Plugin) adminPushoverReady(ctx context.Context, profileID string) (*ProfileSettings, bool, error) {
+	prof, found, err := p.store.Get(ctx, profileID)
+	if err != nil || !found {
+		return nil, false, err
+	}
+	return prof, prof.UserKey != "" && effectiveToken(prof, p.config()) != "", nil
+}
+
+const adminPushoverMissing = "Admin alerts are sent with your profile's Pushover settings. Add your Pushover user key in your profile's section of this page first."
+
+func (p *Plugin) handleGetAdminAlerts(ctx context.Context, a *adminViewer) *pluginv1.HandleHTTPResponse {
+	settings, found, err := p.admins.Get(ctx, a.userID)
+	if err != nil {
+		return storeError(p, err)
+	}
+	if !found {
+		settings = defaultAdminSettings()
+		settings.UserID, settings.ProfileID, settings.Username = a.userID, a.profileID, a.username
+	}
+	_, ready, err := p.adminPushoverReady(ctx, a.profileID)
+	if err != nil {
+		return storeError(p, err)
+	}
+	out := map[string]any{
+		"configured":     found,
+		"settings":       adminSettingsView(settings),
+		"alert_types":    adminAlertTypes,
+		"noise_modes":    noiseModes,
+		"media_types":    mediaTypeOptions,
+		"sounds":         builtinSounds,
+		"pushover_ready": ready,
+	}
+	if !ready {
+		out["pushover_message"] = adminPushoverMissing
+	}
+	return jsonResponse(http.StatusOK, out)
+}
+
+func (p *Plugin) handlePutAdminAlerts(ctx context.Context, a *adminViewer, body []byte) *pluginv1.HandleHTTPResponse {
+	var in adminInput
+	if err := json.Unmarshal(body, &in); err != nil {
+		return errorResponse(apiErr(http.StatusBadRequest, "bad_request", "Couldn't read the settings."))
+	}
+	s, aerr := applyAdminInput(a.userID, a.profileID, a.username, in)
+	if aerr != nil {
+		return errorResponse(aerr)
+	}
+	if err := p.admins.Put(ctx, s); err != nil {
+		return storeError(p, err)
+	}
+	warning := ""
+	if _, ready, err := p.adminPushoverReady(ctx, a.profileID); err == nil && !ready && s.anyEnabled() {
+		warning = "Saved. " + adminPushoverMissing
+	}
+	return jsonResponse(http.StatusOK, map[string]any{"settings": adminSettingsView(s), "warning": warning})
+}
+
+type adminTestInput struct {
+	Settings adminInput `json:"settings"`
+	Alert    string     `json:"alert"`
+}
+
+// handleTestAdminAlert sends a sample of one alert with the unsaved form
+// values, to the admin's profile.
+func (p *Plugin) handleTestAdminAlert(ctx context.Context, a *adminViewer, body []byte) *pluginv1.HandleHTTPResponse {
+	var in adminTestInput
+	if err := json.Unmarshal(body, &in); err != nil {
+		return errorResponse(apiErr(http.StatusBadRequest, "bad_request", "Couldn't read the test request."))
+	}
+	t, ok := adminAlertTypeByKey(in.Alert)
+	if !ok {
+		return errorResponse(apiErr(http.StatusUnprocessableEntity, "invalid", "Unknown alert."))
+	}
+	s, aerr := applyAdminInput(a.userID, a.profileID, a.username, in.Settings)
+	if aerr != nil {
+		return errorResponse(aerr)
+	}
+	prof, ready, err := p.adminPushoverReady(ctx, a.profileID)
+	if err != nil {
+		return storeError(p, err)
+	}
+	if !ready {
+		return errorResponse(apiErr(http.StatusUnprocessableEntity, "pushover_not_set_up", adminPushoverMissing))
+	}
+	msg := adminMessage(prof, s.alert(t.Key), t.Sample, time.Time{})
+	msg.Token = effectiveToken(prof, p.config())
+	msg.Title = "[Test] " + msg.Title
+	if err := p.pushover.Send(ctx, msg); err != nil {
+		return errorResponse(apiErr(http.StatusBadGateway, "pushover_failed", err.Error()))
+	}
+	return jsonResponse(http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleListUsers lists Silo's accounts for the "users to ignore" picker.
+func (p *Plugin) handleListUsers(ctx context.Context, a *adminViewer) *pluginv1.HandleHTTPResponse {
+	users, err := p.silo.Users(ctx, a.base, a.key)
+	switch {
+	case errors.Is(err, errSiloKeyRejected), errors.Is(err, errSiloKeyScope):
+		return errorResponse(monitorKeyProblem(err))
+	case err != nil:
+		p.logger.Warn("could not list Silo accounts with the read-only key", "error", err)
+		return errorResponse(apiErr(http.StatusBadGateway, "silo_unavailable", "Couldn't reach Silo to list accounts. Try again."))
+	}
+	type userView struct {
+		ID       string `json:"id"`
+		Username string `json:"username"`
+		Role     string `json:"role"`
+		Enabled  bool   `json:"enabled"`
+	}
+	out := make([]userView, 0, len(users))
+	for _, u := range users {
+		out = append(out, userView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled})
+	}
+	slices.SortFunc(out, func(x, y userView) int {
+		return strings.Compare(strings.ToLower(x.Username), strings.ToLower(y.Username))
+	})
+	return jsonResponse(http.StatusOK, map[string]any{"users": out})
 }
 
 func storeError(p *Plugin, err error) *pluginv1.HandleHTTPResponse {
