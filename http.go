@@ -195,13 +195,13 @@ func householdNotice(err error, admin bool) *pageNotice {
 		n.Code, n.Level, n.Title = "monitor_key_missing", "info", "Other profiles show up once they set up Pushover."
 		n.Message = "Each profile on your account can set up Pushover by opening this page while signed in to that profile."
 		if admin {
-			n.Message += " To manage every profile from here instead, add a read-only Silo key (scope admin:monitor:read) under " + adminFormPath + "."
+			n.Message += " To manage every profile from here instead, set up a read-only Silo key (scope admin:monitor:read) in the admin section below, or add one under " + adminFormPath + "."
 		}
 	case errors.Is(err, errSiloKeyRejected):
 		n.Code = "monitor_key_rejected"
 		n.Message = "Silo rejected the plugin's read-only Silo key, so only profiles that already set up Pushover are listed."
 		if admin {
-			n.Message += " The key may have been revoked or pasted wrong. Create a new key with the admin:monitor:read scope and replace it under " + adminFormPath + "."
+			n.Message += " The key may have been revoked or pasted wrong. Set up a new one in the admin section below, or replace it under " + adminFormPath + "."
 		} else {
 			n.Message += " Let your server admin know."
 		}
@@ -209,7 +209,7 @@ func householdNotice(err error, admin bool) *pageNotice {
 		n.Code = "monitor_key_scope"
 		n.Message = "The plugin's read-only Silo key isn't allowed to list profiles, so only profiles that already set up Pushover are listed."
 		if admin {
-			n.Message += " Use a key with the admin:monitor:read scope, created on an admin account, under " + adminFormPath + "."
+			n.Message += " Set up a new key in the admin section below, or use a key with the admin:monitor:read scope, created on an admin account, under " + adminFormPath + "."
 		} else {
 			n.Message += " Let your server admin know."
 		}
@@ -232,6 +232,12 @@ func (p *Plugin) serveAPI(ctx context.Context, req *pluginv1.HandleHTTPRequest) 
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(req.GetPath(), "/api/"), "/"), "/")
 	if len(parts) == 1 && parts[0] == "state" && method == http.MethodGet {
 		return p.handleState(ctx, req)
+	}
+	if len(parts) == 2 && parts[0] == "admin" && parts[1] == "key-setup" {
+		if method != http.MethodPost {
+			return errorResponse(apiErr(http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed."))
+		}
+		return p.handleKeySetup(ctx, req)
 	}
 	if len(parts) < 2 || parts[0] != "profiles" {
 		return errorResponse(apiErr(http.StatusNotFound, "not_found", "Not found."))
@@ -302,6 +308,9 @@ func (p *Plugin) handleState(ctx context.Context, req *pluginv1.HandleHTTPReques
 	}
 	state["profiles"] = profiles
 	state["household"] = v.household
+	if v.admin {
+		state["admin_keys"] = p.adminKeyStatus()
+	}
 	if v.notice != nil {
 		state["notice"] = v.notice
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -93,18 +95,60 @@ func (c *siloClient) AccountProfiles(ctx context.Context, baseURL, apiKey string
 
 // get calls one GET route with the key and decodes the JSON answer.
 func (c *siloClient) get(ctx context.Context, baseURL, apiKey, path string, out any) error {
-	if baseURL == "" {
+	return siloCall(ctx, c.http, c.timeout, siloRequest{method: http.MethodGet, baseURL: baseURL, apiKey: apiKey, path: path}, out)
+}
+
+// siloStatusError is an answer other than success, 401 or 403. Detail is
+// Silo's own explanation (its problem document), never a key.
+type siloStatusError struct {
+	Status int
+	Detail string
+}
+
+func (e *siloStatusError) Error() string {
+	if e.Detail != "" {
+		return fmt.Sprintf("Silo returned HTTP %d: %s", e.Status, e.Detail)
+	}
+	return fmt.Sprintf("Silo returned HTTP %d", e.Status)
+}
+
+// siloRequest is one call to Silo's API with a bearer key.
+type siloRequest struct {
+	method, baseURL, apiKey, path string
+	body                          any
+	ifMatch                       string
+}
+
+// siloCall sends one request and decodes a JSON answer into out (when out is
+// not nil). 401 and 403 become errSiloKeyRejected and errSiloKeyScope.
+// Errors never include the key or the request line.
+func siloCall(ctx context.Context, client *http.Client, timeout time.Duration, r siloRequest, out any) error {
+	if r.baseURL == "" {
 		return errors.New("Silo's internal URL is not known yet")
 	}
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+path, nil)
-	if err != nil {
-		return err
+	var body io.Reader
+	if r.body != nil {
+		raw, err := json.Marshal(r.body)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(raw)
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req, err := http.NewRequestWithContext(ctx, r.method, r.baseURL+r.path, body)
+	if err != nil {
+		return errors.New("couldn't build the request to Silo")
+	}
+	req.Header.Set("Authorization", "Bearer "+r.apiKey)
 	req.Header.Set("Accept", "application/json")
-	resp, err := c.http.Do(req)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if r.ifMatch != "" {
+		req.Header.Set("If-Match", r.ifMatch)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		// Keep the cause, not the full request line.
 		var uerr *url.Error
@@ -119,11 +163,153 @@ func (c *siloClient) get(ctx context.Context, baseURL, apiKey, path string, out 
 		return errSiloKeyRejected
 	case resp.StatusCode == http.StatusForbidden:
 		return errSiloKeyScope
-	case resp.StatusCode != http.StatusOK:
-		return fmt.Errorf("Silo returned HTTP %d", resp.StatusCode)
+	case resp.StatusCode < 200 || resp.StatusCode > 299:
+		return &siloStatusError{Status: resp.StatusCode, Detail: problemDetail(resp.Body)}
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out); err != nil {
+	if out == nil {
+		return nil
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(out); err != nil {
 		return fmt.Errorf("decode Silo response: %w", err)
 	}
 	return nil
+}
+
+// problemDetail pulls a short explanation out of Silo's problem document.
+func problemDetail(r io.Reader) string {
+	var problem struct {
+		Title  string `json:"title"`
+		Detail string `json:"detail"`
+		Errors []struct {
+			Detail string `json:"detail"`
+		} `json:"errors"`
+	}
+	if json.NewDecoder(io.LimitReader(r, 64<<10)).Decode(&problem) != nil {
+		return ""
+	}
+	parts := []string{}
+	for _, s := range []string{problem.Detail, problem.Title} {
+		if s = strings.TrimSpace(s); s != "" {
+			parts = append(parts, s)
+			break
+		}
+	}
+	for _, e := range problem.Errors {
+		if s := strings.TrimSpace(e.Detail); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	msg := strings.Join(parts, " ")
+	if len(msg) > 300 {
+		msg = msg[:300] + "…"
+	}
+	return msg
+}
+
+// Scopes the plugin's keys carry (silo-server internal/auth, mapped to routes
+// in internal/api/middleware/api_key_scopes.go).
+const (
+	scopeMonitorRead     = "admin:monitor:read"
+	scopeSessionsControl = "admin:sessions:control"
+)
+
+// siloAPIKey is one row of GET /api/v2/admin/api-keys. It never holds the
+// key itself, only its first characters.
+type siloAPIKey struct {
+	ID        string   `json:"id"`
+	UserID    string   `json:"user_id"`
+	Label     string   `json:"label"`
+	KeyPrefix string   `json:"key_prefix"`
+	Scopes    []string `json:"scopes"`
+}
+
+// createdAPIKey is POST /api/v2/admin/api-keys's answer. Key is shown once.
+type createdAPIKey struct {
+	ID     string   `json:"id"`
+	UserID string   `json:"user_id"`
+	Label  string   `json:"label"`
+	Key    string   `json:"key"`
+	Scopes []string `json:"scopes"`
+}
+
+// keyAdmin manages Silo API keys with a full-access key an admin hands over
+// for one setup. It is separate from siloClient, which only reads with the
+// stored read-only key. The full-access key is passed in on every call and
+// never kept.
+type keyAdmin struct {
+	http    *http.Client
+	timeout time.Duration
+}
+
+func newKeyAdmin() *keyAdmin {
+	return &keyAdmin{http: &http.Client{Timeout: 10 * time.Second}, timeout: keySetupCallTimeout}
+}
+
+// keySetupCallTimeout bounds each call. Silo gives the whole page request
+// 10 s, and a setup makes several calls.
+const keySetupCallTimeout = 4 * time.Second
+
+func (k *keyAdmin) call(ctx context.Context, r siloRequest, out any) error {
+	return siloCall(ctx, k.http, k.timeout, r, out)
+}
+
+// List returns every API key on the server (GET /api/v2/admin/api-keys,
+// unscoped keys only), following the pages.
+func (k *keyAdmin) List(ctx context.Context, baseURL, apiKey string) ([]siloAPIKey, error) {
+	var all []siloAPIKey
+	cursor := ""
+	for range 50 {
+		path := "/api/v2/admin/api-keys?limit=200"
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		var page struct {
+			Items []siloAPIKey `json:"items"`
+			Page  *struct {
+				NextCursor string `json:"next_cursor"`
+				HasMore    bool   `json:"has_more"`
+			} `json:"page"`
+		}
+		if err := k.call(ctx, siloRequest{method: http.MethodGet, baseURL: baseURL, apiKey: apiKey, path: path}, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Items...)
+		if page.Page == nil || !page.Page.HasMore || page.Page.NextCursor == "" {
+			return all, nil
+		}
+		cursor = page.Page.NextCursor
+	}
+	return nil, errors.New("Silo listed too many API keys")
+}
+
+// Create makes a key on account userID (POST /api/v2/admin/api-keys).
+func (k *keyAdmin) Create(ctx context.Context, baseURL, apiKey string, userID int, label string, scopes []string) (*createdAPIKey, error) {
+	body := map[string]any{"label": label, "user_id": strconv.Itoa(userID), "scopes": scopes}
+	var created createdAPIKey
+	if err := k.call(ctx, siloRequest{method: http.MethodPost, baseURL: baseURL, apiKey: apiKey, path: "/api/v2/admin/api-keys", body: body}, &created); err != nil {
+		return nil, err
+	}
+	if !strings.HasPrefix(created.Key, "sa_") || !validKeyID(created.ID) {
+		return &created, errors.New("Silo's answer didn't include a usable key")
+	}
+	return &created, nil
+}
+
+// Delete revokes a key by ID (DELETE /api/v2/admin/api-keys/{id}). Silo
+// requires If-Match on this route; "*" means whatever its current revision.
+func (k *keyAdmin) Delete(ctx context.Context, baseURL, apiKey, id string) error {
+	if !validKeyID(id) {
+		return errors.New("invalid API key ID")
+	}
+	return k.call(ctx, siloRequest{method: http.MethodDelete, baseURL: baseURL, apiKey: apiKey, path: "/api/v2/admin/api-keys/" + id, ifMatch: "*"}, nil)
+}
+
+// Probe calls a GET route and reports only whether the key may use it.
+func (k *keyAdmin) Probe(ctx context.Context, baseURL, apiKey, path string) error {
+	return k.call(ctx, siloRequest{method: http.MethodGet, baseURL: baseURL, apiKey: apiKey, path: path}, nil)
+}
+
+func validKeyID(id string) bool {
+	n, err := strconv.ParseInt(id, 10, 64)
+	return err == nil && n > 0 && strconv.FormatInt(n, 10) == id
 }

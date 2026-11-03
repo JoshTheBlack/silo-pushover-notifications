@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
@@ -34,6 +35,18 @@ type Plugin struct {
 
 	cfgMu sync.RWMutex
 	cfg   adminConfig
+	// configured is set once Silo has called Configure, so the plugin knows
+	// the stored config before it writes it back.
+	configured atomic.Bool
+
+	// keys creates and revokes Silo API keys during a key setup.
+	keys *keyAdmin
+	// keySetupMu lets one key setup run at a time in this process.
+	keySetupMu sync.Mutex
+	// setGlobalConfigFn rewrites the plugin's own config row (the host's
+	// SetGlobalConfigEntry). It replaces the whole row and doesn't call
+	// Configure, so callers update p.cfg themselves.
+	setGlobalConfigFn func(ctx context.Context, key string, value map[string]any) error
 
 	hostInfoFn func(ctx context.Context) (*runtimehost.HostInfo, error)
 	hostMu     sync.Mutex
@@ -57,16 +70,18 @@ const (
 
 func newPlugin(logger *slog.Logger, state stateBackend) *Plugin {
 	return &Plugin{
-		logger:          logger,
-		store:           newProfileStore(state),
-		pushover:        newPushoverClient(),
-		silo:            newSiloClient(),
-		fetch:           &http.Client{Timeout: defaultPosterTimeout},
-		handled:         newEventLog(state),
-		hostInfoFn:      sdkHostInfo,
-		resolveImagesFn: sdkResolveImages,
-		eventTimeout:    defaultEventTimeout,
-		posterTimeout:   defaultPosterTimeout,
+		logger:            logger,
+		store:             newProfileStore(state),
+		pushover:          newPushoverClient(),
+		silo:              newSiloClient(),
+		keys:              newKeyAdmin(),
+		fetch:             &http.Client{Timeout: defaultPosterTimeout},
+		handled:           newEventLog(state),
+		hostInfoFn:        sdkHostInfo,
+		resolveImagesFn:   sdkResolveImages,
+		setGlobalConfigFn: sdkSetGlobalConfig,
+		eventTimeout:      defaultEventTimeout,
+		posterTimeout:     defaultPosterTimeout,
 	}
 }
 
@@ -118,6 +133,25 @@ func sdkResolveImages(ctx context.Context, paths []string, variant string) (map[
 	return h.ResolveCatalogImageURLs(ctx, paths, variant)
 }
 
+func sdkSetGlobalConfig(ctx context.Context, key string, value map[string]any) error {
+	h := sdkruntime.Host()
+	if h == nil {
+		return errHostUnavailable
+	}
+	return h.SetGlobalConfigEntry(ctx, key, value)
+}
+
+// saveConfig writes cfg as the plugin's stored config and, once that worked,
+// makes it the running config. Other API servers' plugin processes keep their
+// copy until Silo next calls their Configure (a restart or an admin save).
+func (p *Plugin) saveConfig(ctx context.Context, cfg adminConfig) error {
+	if err := p.setGlobalConfigFn(ctx, adminConfigKey, cfg.storedValue()); err != nil {
+		return err
+	}
+	p.setConfig(cfg)
+	return nil
+}
+
 type runtimeServer struct {
 	runtimedefault.Server
 	manifest *pluginv1.PluginManifest
@@ -131,9 +165,10 @@ func (s *runtimeServer) GetManifest(context.Context, *pluginv1.GetManifestReques
 func (s *runtimeServer) Configure(_ context.Context, req *pluginv1.ConfigureRequest) (*pluginv1.ConfigureResponse, error) {
 	cfg := parseAdminConfig(req.GetConfig())
 	s.plugin.setConfig(cfg)
+	s.plugin.configured.Store(true)
 	if cfg.LegacyKeyStored {
 		// Only the fact, never the value.
-		s.plugin.logger.Info("the unscoped Silo API key saved by version 0.2.0 is still stored with this plugin's settings; it is ignored. Revoke it under Admin > API Keys.")
+		s.plugin.logger.Info("the unscoped Silo API key saved by version 0.2.0 is still stored with this plugin's settings; it is ignored. Replace it from the admin section of the Pushover page, or revoke it under Admin > API Keys.")
 	}
 	return &pluginv1.ConfigureResponse{}, nil
 }

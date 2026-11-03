@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -13,8 +14,17 @@ const adminConfigKey = "pushover"
 // legacyAPIKeyField is the unscoped admin key 0.2.0 asked for. Silo keeps a
 // saved value after an upgrade (an admin save merges over the stored row and
 // can't clear undeclared fields), so it still arrives in Configure. Its value
-// is never read.
+// is used for one thing only: the page's "Replace the old full-access key"
+// setup, which revokes it and rewrites the config without it.
 const legacyAPIKeyField = "silo_api_key"
+
+// Config fields as stored (manifest.json global_config_schema "pushover").
+const (
+	fieldMonitorAPIKey   = "monitor_api_key"
+	fieldControlAPIKey   = "control_api_key"
+	fieldDefaultAppToken = "default_app_token"
+	fieldPublicURL       = "public_url"
+)
 
 // adminConfig is the server-wide configuration an admin sets under
 // Admin > Plugins > Pushover Notifications.
@@ -33,6 +43,35 @@ type adminConfig struct {
 	PublicURL string
 	// LegacyKeyStored reports that 0.2.0's silo_api_key is still saved.
 	LegacyKeyStored bool
+	// legacyAPIKey is that key's value, held in memory for the one-click
+	// replacement only. Unexported and left out of LogValue so it can't be
+	// logged or sent anywhere by accident.
+	legacyAPIKey string
+}
+
+// storedValue is the config row as the plugin writes it back with the host's
+// SetGlobalConfigEntry, which replaces the whole row. It carries every
+// declared field and leaves out silo_api_key.
+func (c adminConfig) storedValue() map[string]any {
+	value := map[string]any{}
+	for field, v := range map[string]string{
+		fieldMonitorAPIKey:   c.MonitorAPIKey,
+		fieldControlAPIKey:   c.ControlAPIKey,
+		fieldDefaultAppToken: c.DefaultAppToken,
+		fieldPublicURL:       c.PublicURL,
+	} {
+		if v != "" {
+			value[field] = v
+		}
+	}
+	return value
+}
+
+// withoutLegacyKey is c after silo_api_key has been dropped from the stored
+// row.
+func (c adminConfig) withoutLegacyKey() adminConfig {
+	c.LegacyKeyStored, c.legacyAPIKey = false, ""
+	return c
 }
 
 // LogValue keeps keys out of logs if a config is ever logged.
@@ -47,6 +86,15 @@ func (c adminConfig) LogValue() slog.Value {
 	)
 }
 
+// String and GoString keep keys out of fmt output (%v, %+v, %#v), the same
+// way LogValue does for logs.
+func (c adminConfig) String() string {
+	return fmt.Sprintf("{monitor_api_key_set:%t control_api_key_set:%t default_app_token_set:%t public_url:%q legacy_key_stored:%t}",
+		c.MonitorAPIKey != "", c.ControlAPIKey != "", c.DefaultAppToken != "", c.PublicURL, c.LegacyKeyStored)
+}
+
+func (c adminConfig) GoString() string { return "adminConfig" + c.String() }
+
 func parseAdminConfig(entries []*pluginv1.ConfigEntry) adminConfig {
 	var cfg adminConfig
 	for _, entry := range entries {
@@ -55,11 +103,12 @@ func parseAdminConfig(entries []*pluginv1.ConfigEntry) adminConfig {
 		}
 		fields := entry.GetValue().GetFields()
 		str := func(key string) string { return strings.TrimSpace(fields[key].GetStringValue()) }
-		cfg.MonitorAPIKey = str("monitor_api_key")
-		cfg.ControlAPIKey = str("control_api_key")
-		cfg.DefaultAppToken = str("default_app_token")
-		cfg.PublicURL = strings.TrimRight(str("public_url"), "/")
-		cfg.LegacyKeyStored = str(legacyAPIKeyField) != ""
+		cfg.MonitorAPIKey = str(fieldMonitorAPIKey)
+		cfg.ControlAPIKey = str(fieldControlAPIKey)
+		cfg.DefaultAppToken = str(fieldDefaultAppToken)
+		cfg.PublicURL = strings.TrimRight(str(fieldPublicURL), "/")
+		cfg.legacyAPIKey = str(legacyAPIKeyField)
+		cfg.LegacyKeyStored = cfg.legacyAPIKey != ""
 	}
 	return cfg
 }
