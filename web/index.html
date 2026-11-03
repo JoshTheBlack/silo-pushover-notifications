@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pushover · Silo</title>
+  <style>
+    :root {
+      --bg: #0e1014; --surface: #161920; --surface-2: #1d212a; --border: #2a2f3a;
+      --text: #e7e9ee; --muted: #98a1b0; --accent: #3b8cff; --accent-text: #fff;
+      --ok: #3fb950; --warn: #d29922; --danger: #f06a6a; --focus: #7fb2ff;
+      --radius: 14px; color-scheme: dark;
+    }
+    :root[data-theme="light"] {
+      --bg: #f5f6f8; --surface: #fff; --surface-2: #f0f2f5; --border: #dde1e7;
+      --text: #171a20; --muted: #5d6675; --accent: #1f6fe5; --ok: #1a7f37; --warn: #9a6700;
+      --danger: #c62828; --focus: #1f6fe5; color-scheme: light;
+    }
+    @media (prefers-color-scheme: light) {
+      :root[data-theme="auto"] {
+        --bg: #f5f6f8; --surface: #fff; --surface-2: #f0f2f5; --border: #dde1e7;
+        --text: #171a20; --muted: #5d6675; --accent: #1f6fe5; --ok: #1a7f37; --warn: #9a6700;
+        --danger: #c62828; --focus: #1f6fe5; color-scheme: light;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    main { max-width: 760px; margin: 0 auto; padding: 24px 16px 120px; }
+    a { color: var(--accent); }
+    .back { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); text-decoration: none; font-size: 14px; }
+    .back:hover { color: var(--text); }
+    h1 { font-size: 26px; margin: 12px 0 4px; letter-spacing: -0.01em; }
+    h2 { font-size: 17px; margin: 0 0 4px; }
+    .lede { color: var(--muted); margin: 0 0 20px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+    .card > .sub { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
+    .notice { border-radius: var(--radius); padding: 14px 16px; margin-bottom: 16px; border: 1px solid var(--border); background: var(--surface); }
+    .notice.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
+    .notice.error { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); }
+    .notice strong { display: block; margin-bottom: 2px; }
+    .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+    .tab { border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px; padding: 6px 14px; cursor: pointer; font: inherit; font-size: 14px; }
+    .tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+    .tab .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); margin-left: 6px; vertical-align: middle; }
+    .field { margin-bottom: 16px; }
+    .field:last-child { margin-bottom: 0; }
+    label.lbl { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+    .help { color: var(--muted); font-size: 13px; margin-top: 6px; }
+    input[type="text"], input[type="password"], select, textarea {
+      width: 100%; background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+      border-radius: 10px; padding: 9px 12px; font: inherit;
+    }
+    textarea { resize: vertical; min-height: 64px; }
+    input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, summary:focus-visible, .tab:focus-visible {
+      outline: 2px solid var(--focus); outline-offset: 2px;
+    }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .row > input { flex: 1; min-width: 0; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+    button.btn { font: inherit; font-size: 14px; font-weight: 600; border-radius: 10px; padding: 9px 16px; cursor: pointer; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); white-space: nowrap; }
+    button.btn:hover { border-color: var(--muted); }
+    button.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+    button.btn.danger { color: var(--danger); }
+    button.btn:disabled { opacity: 0.55; cursor: default; }
+    button.link { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; font-size: 13px; cursor: pointer; }
+    .switch { display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
+    .switch input { appearance: none; flex: none; width: 38px; height: 22px; border-radius: 999px; background: var(--border); position: relative; cursor: pointer; margin: 1px 0 0; transition: background .15s; }
+    .switch input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
+    .switch input:checked { background: var(--accent); }
+    .switch input:checked::after { transform: translateX(16px); }
+    .switch .t { font-weight: 600; font-size: 14px; }
+    .switch .d { color: var(--muted); font-size: 13px; }
+    .checks { display: grid; gap: 12px; }
+    .status-ok { color: var(--ok); }
+    .status-err { color: var(--danger); }
+    .type { border-top: 1px solid var(--border); padding: 16px 0; }
+    .type:first-of-type { border-top: 0; padding-top: 4px; }
+    .type:last-child { padding-bottom: 0; }
+    details > summary { cursor: pointer; color: var(--accent); font-size: 13px; margin: 10px 0 0 50px; list-style: none; width: fit-content; }
+    details > summary::-webkit-details-marker { display: none; }
+    details[open] > summary { margin-bottom: 12px; }
+    .editor { margin-left: 50px; }
+    @media (max-width: 640px) { .editor, details > summary { margin-left: 0; } }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .chip { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 2px 7px; cursor: pointer; }
+    .chip:hover { border-color: var(--accent); }
+    .preview { margin-top: 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+    .preview .pl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 6px; }
+    .preview .pt { font-weight: 600; }
+    .preview .pm { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+    .bar { position: fixed; left: 0; right: 0; bottom: 0; background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(8px); border-top: 1px solid var(--border); }
+    .bar .in { max-width: 760px; margin: 0 auto; padding: 12px 16px; display: flex; gap: 8px; align-items: center; }
+    .bar .msg { flex: 1; font-size: 14px; color: var(--muted); min-width: 0; }
+    .skeleton { height: 160px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <a class="back" href="/">← Back to Silo</a>
+  <h1>Pushover</h1>
+  <p class="lede">Get your Silo notifications on your phone, tablet or desktop through <a href="https://pushover.net" target="_blank" rel="noopener">Pushover</a>.</p>
+  <div id="notice"></div>
+  <div id="app"><div class="skeleton"></div></div>
+</main>
+<div class="bar" id="bar" hidden>
+  <div class="in">
+    <div class="msg" id="barMsg" role="status" aria-live="polite"></div>
+    <button class="btn danger" id="removeBtn" type="button" hidden>Remove</button>
+    <button class="btn primary" id="saveBtn" type="button">Save</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const root = document.documentElement;
+  if (root.dataset.theme === "auto") {
+    const t = (new URLSearchParams(location.search).get("theme") || "").toLowerCase();
+    if (t) root.dataset.theme = t.includes("light") ? "light" : "dark";
+  }
+
+  const PRIORITIES = [
+    { value: -2, label: "Lowest: no alert" },
+    { value: -1, label: "Low: no sound or vibration" },
+    { value: 0, label: "Normal" },
+    { value: 1, label: "High: bypasses quiet hours" },
+  ];
+
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  let state = null, profileId = null, view = null, draft = null;
+  let devices = [], sounds = [], lastField = null, dirty = false, expired = false;
+
+  async function api(path, method = "GET", body) {
+    const opts = { method, credentials: "same-origin", headers: { Accept: "application/json" } };
+    if (body !== undefined) {
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    let res;
+    try { res = await fetch(path, opts); } catch { throw new Error("Couldn't reach Silo. Check your connection and try again."); }
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) { sessionExpired(); throw new Error(data.message || "Session expired."); }
+    if (!res.ok) throw new Error(data.message || `Request failed (${res.status}).`);
+    return data;
+  }
+
+  function notice(kind, title, text) {
+    $("#notice").innerHTML = title ? `<div class="notice ${kind}"><strong>${esc(title)}</strong>${esc(text)}</div>` : "";
+  }
+
+  function sessionExpired() {
+    expired = true;
+    notice("warn", "This page's sign-in has expired.", " For security it only lasts a few minutes. Open Pushover from the Silo sidebar again to keep going. Unsaved changes on this page will be lost.");
+    $$("#app input, #app select, #app textarea, #app button, #bar button").forEach((e) => (e.disabled = true));
+  }
+
+  function barMessage(text, kind) {
+    const m = $("#barMsg");
+    m.textContent = text || "";
+    m.className = "msg" + (kind ? " status-" + kind : "");
+  }
+
+  function markDirty() {
+    dirty = true;
+    barMessage("Unsaved changes");
+  }
+
+  // Mirrors renderTemplate in templates.go.
+  function render(tmpl, vars) {
+    return (tmpl || "").replace(/\r\n/g, "\n").split("\n").map((line) => {
+      if (!line.trim()) return "";
+      const out = line.replace(/\{([a-z_]+)\}/g, (m, k) => (k in vars ? vars[k] : m));
+      return tidy(out) || null;
+    }).filter((l) => l !== null).join("\n").trim();
+  }
+  function tidy(line) {
+    const seps = " \t·•|,:–—";
+    line = line.replace(/\(\)|\[\]/g, "").split(/\s+/).filter(Boolean).join(" ");
+    let a = 0, b = line.length;
+    while (a < b && seps.includes(line[a])) a++;
+    while (b > a && (seps + "-").includes(line[b - 1])) b--;
+    return line.slice(a, b);
+  }
+
+  function sampleVars(type) {
+    const p = state.profiles.find((x) => x.id === profileId);
+    return { profile: p ? p.name : "", type: type.key, type_label: type.label, ...type.sample };
+  }
+
+  async function init() {
+    try {
+      state = await api("api/state");
+    } catch (e) {
+      if (!expired) { $("#app").innerHTML = ""; notice("error", "Couldn't load Pushover settings.", " " + e.message); }
+      return;
+    }
+    if (state.problem) {
+      $("#app").innerHTML = "";
+      notice("warn", "Pushover isn't ready yet.", " " + state.problem.message);
+      return;
+    }
+    const active = state.profiles.find((p) => p.active) || state.profiles[0];
+    profileId = active.id;
+    await loadProfile();
+  }
+
+  async function loadProfile() {
+    $("#app").innerHTML = `<div class="skeleton"></div>`;
+    try {
+      view = await api("api/profiles/" + encodeURIComponent(profileId));
+    } catch (e) {
+      if (!expired) notice("error", "Couldn't load this profile.", " " + e.message);
+      return;
+    }
+    draft = JSON.parse(JSON.stringify(view));
+    draft.user_key = ""; draft.app_token = ""; draft.clear_app_token = false;
+    devices = view.device ? view.device.split(",") : [];
+    sounds = state.sounds;
+    dirty = false;
+    renderAll();
+    barMessage(view.configured ? "" : "Not set up yet");
+  }
+
+  function renderTabs() {
+    if (state.profiles.length < 2) return "";
+    return `<div class="tabs" role="tablist" aria-label="Profiles">${state.profiles.map((p) =>
+      `<button class="tab" role="tab" type="button" data-profile="${esc(p.id)}" aria-selected="${p.id === profileId}">${esc(p.name)}${p.enabled ? '<span class="dot" title="Pushover is on"></span>' : ""}</button>`).join("")}</div>`;
+  }
+
+  function soundOptions(selected, emptyLabel) {
+    const list = [...sounds];
+    if (selected && !list.some((s) => s.value === selected)) list.push({ value: selected, label: selected });
+    return `<option value="">${esc(emptyLabel)}</option>` + list.map((s) =>
+      `<option value="${esc(s.value)}"${s.value === selected ? " selected" : ""}>${esc(s.label)}</option>`).join("");
+  }
+
+  function priorityOptions(selected, inherit) {
+    const first = inherit ? `<option value=""${selected == null ? " selected" : ""}>Same as default</option>` : "";
+    return first + PRIORITIES.map((p) => `<option value="${p.value}"${p.value === selected ? " selected" : ""}>${esc(p.label)}</option>`).join("");
+  }
+
+  function deviceOptions() {
+    const current = draft.device;
+    const list = [...new Set([...devices, ...(current && !current.includes(",") ? [current] : [])])];
+    return `<option value="">All my devices</option>` + list.map((d) =>
+      `<option value="${esc(d)}"${d === current ? " selected" : ""}>${esc(d)}</option>`).join("");
+  }
+
+  function renderAll() {
+    const tokenHelp = state.has_default_token
+      ? "Optional. Leave blank to use this server's shared Pushover application."
+      : `Required. This server has no shared application, so <a href="https://pushover.net/apps/build" target="_blank" rel="noopener">create one on Pushover</a> and paste its API token.`;
+    const keyPlaceholder = view.user_key_hint ? `Saved (${view.user_key_hint}). Enter a new key to replace it.` : "30 letters and numbers";
+    const tokenPlaceholder = view.app_token_hint ? `Saved (${view.app_token_hint}). Enter a new token to replace it.` : (state.has_default_token ? "Using the server's application" : "30 letters and numbers");
+
+    $("#app").innerHTML = `
+      ${renderTabs()}
+      <section class="card">
+        <h2>Pushover account</h2>
+        <p class="sub">Settings for <strong>${esc(view.profile_name)}</strong>. Find your user key at the top of <a href="https://pushover.net" target="_blank" rel="noopener">pushover.net</a> after you sign in.</p>
+        <div class="field">
+          <label class="switch"><input type="checkbox" id="enabled" role="switch"${draft.enabled ? " checked" : ""}>
+            <span><span class="t">Send this profile's notifications to Pushover</span></span></label>
+        </div>
+        <div class="field">
+          <label class="lbl" for="userKey">User key</label>
+          <div class="row">
+            <input type="password" id="userKey" autocomplete="off" spellcheck="false" placeholder="${esc(keyPlaceholder)}">
+            <button class="btn" type="button" id="checkBtn">Check key</button>
+          </div>
+          <div class="help" id="checkMsg" role="status" aria-live="polite">Checking lists your devices and custom sounds.</div>
+        </div>
+        <div class="field">
+          <label class="lbl" for="appToken">Application token</label>
+          <input type="password" id="appToken" autocomplete="off" spellcheck="false" placeholder="${esc(tokenPlaceholder)}">
+          <div class="help">${tokenHelp}${view.app_token_hint ? ` <button class="link" type="button" id="clearToken">${draft.clear_app_token ? "Keep my saved token" : "Remove my saved token"}</button>` : ""}</div>
+        </div>
+        <div class="grid">
+          <div class="field"><label class="lbl" for="device">Device</label><select id="device">${deviceOptions()}</select></div>
+          <div class="field"><label class="lbl" for="sound">Sound</label><select id="sound">${soundOptions(draft.sound, "Pushover app default")}</select></div>
+          <div class="field"><label class="lbl" for="priority">Priority</label><select id="priority">${priorityOptions(draft.priority, false)}</select></div>
+        </div>
+        <div class="checks">
+          <label class="switch"><input type="checkbox" id="includeLink"${draft.include_link ? " checked" : ""}>
+            <span><span class="t">Add an "Open in Silo" link</span><br><span class="d">Opens the episode or title in Silo.</span></span></label>
+          <label class="switch"><input type="checkbox" id="attachPoster"${draft.attach_poster ? " checked" : ""}>
+            <span><span class="t">Attach the poster</span><br><span class="d">Shows artwork in the notification when Silo has it.</span></span></label>
+          <label class="switch"><input type="checkbox" id="html"${draft.html ? " checked" : ""}>
+            <span><span class="t">Allow HTML in messages</span><br><span class="d">Lets your templates use &lt;b&gt;, &lt;i&gt;, &lt;u&gt;, &lt;font color&gt; and &lt;a&gt;.</span></span></label>
+        </div>
+      </section>
+      <section class="card">
+        <h2>Notifications</h2>
+        <p class="sub">Choose what to receive and how each one reads. Which episodes count as new follows your New Episode Notifications settings in Silo.</p>
+        ${state.types.map(renderType).join("")}
+      </section>`;
+
+    $("#bar").hidden = false;
+    $("#removeBtn").hidden = !view.configured;
+    bind();
+    state.types.forEach(updatePreview);
+  }
+
+  function renderType(t) {
+    const ts = draft.types[t.key];
+    const id = t.key.replace(/\W/g, "_");
+    return `
+      <div class="type" data-type="${esc(t.key)}">
+        <label class="switch"><input type="checkbox" data-k="enabled"${ts.enabled ? " checked" : ""}>
+          <span><span class="t">${esc(t.label)}</span><br><span class="d">${esc(t.description)}</span></span></label>
+        <details>
+          <summary>Customize wording</summary>
+          <div class="editor">
+            <div class="field"><label class="lbl" for="${id}_title">Title</label>
+              <input type="text" id="${id}_title" data-k="title" value="${esc(ts.title)}"></div>
+            <div class="field"><label class="lbl" for="${id}_message">Message</label>
+              <textarea id="${id}_message" data-k="message" rows="2">${esc(ts.message)}</textarea>
+              <div class="chips" aria-label="Insert a placeholder">${t.placeholders.map((p) => `<button class="chip" type="button" data-insert="{${esc(p)}}">{${esc(p)}}</button>`).join("")}</div>
+            </div>
+            <div class="grid">
+              <div class="field"><label class="lbl" for="${id}_priority">Priority</label>
+                <select id="${id}_priority" data-k="priority">${priorityOptions(ts.priority ?? null, true)}</select></div>
+              <div class="field"><label class="lbl" for="${id}_sound">Sound</label>
+                <select id="${id}_sound" data-k="sound">${soundOptions(ts.sound || "", "Same as default")}</select></div>
+            </div>
+            <div class="preview" aria-live="polite"><div class="pl">Preview with sample data</div><div class="pt"></div><div class="pm"></div></div>
+            <div class="actions">
+              <button class="btn" type="button" data-test>Send test</button>
+              <button class="link" type="button" data-reset>Reset wording</button>
+              <span class="help" data-test-msg role="status" aria-live="polite"></span>
+            </div>
+          </div>
+        </details>
+      </div>`;
+  }
+
+  function updatePreview(t) {
+    const box = $(`.type[data-type="${CSS.escape(t.key)}"]`);
+    if (!box) return;
+    const ts = draft.types[t.key];
+    const vars = sampleVars(t);
+    $(".pt", box).textContent = render(ts.title, vars) || "(no title)";
+    $(".pm", box).textContent = render(ts.message, vars) || "(no message)";
+  }
+
+  function bind() {
+    $$(".tab").forEach((b) => b.addEventListener("click", async () => {
+      if (b.dataset.profile === profileId) return;
+      if (dirty && !confirm("Discard unsaved changes to this profile?")) return;
+      profileId = b.dataset.profile;
+      await loadProfile();
+    }));
+
+    const on = (sel, ev, fn) => { const e = $(sel); if (e) e.addEventListener(ev, fn); };
+    on("#enabled", "change", (e) => { draft.enabled = e.target.checked; markDirty(); });
+    on("#userKey", "input", (e) => { draft.user_key = e.target.value.trim(); markDirty(); });
+    on("#appToken", "input", (e) => { draft.app_token = e.target.value.trim(); markDirty(); });
+    on("#device", "change", (e) => { draft.device = e.target.value; markDirty(); });
+    on("#sound", "change", (e) => { draft.sound = e.target.value; markDirty(); });
+    on("#priority", "change", (e) => { draft.priority = Number(e.target.value); markDirty(); });
+    on("#includeLink", "change", (e) => { draft.include_link = e.target.checked; markDirty(); });
+    on("#attachPoster", "change", (e) => { draft.attach_poster = e.target.checked; markDirty(); });
+    on("#html", "change", (e) => { draft.html = e.target.checked; markDirty(); });
+    on("#clearToken", "click", (e) => {
+      draft.clear_app_token = !draft.clear_app_token;
+      e.target.textContent = draft.clear_app_token ? "Keep my saved token" : "Remove my saved token";
+      markDirty();
+    });
+    on("#checkBtn", "click", checkKey);
+
+    $$(".type").forEach((box) => {
+      const t = state.types.find((x) => x.key === box.dataset.type);
+      const ts = draft.types[t.key];
+      $$("[data-k]", box).forEach((input) => {
+        const k = input.dataset.k;
+        const ev = input.tagName === "SELECT" || input.type === "checkbox" ? "change" : "input";
+        input.addEventListener(ev, () => {
+          if (k === "enabled") ts.enabled = input.checked;
+          else if (k === "priority") ts.priority = input.value === "" ? null : Number(input.value);
+          else ts[k] = input.value;
+          markDirty();
+          updatePreview(t);
+        });
+        if (k === "title" || k === "message") input.addEventListener("focus", () => (lastField = input));
+      });
+      $$("[data-insert]", box).forEach((chip) => chip.addEventListener("click", () => {
+        const target = lastField && box.contains(lastField) ? lastField : $("[data-k=message]", box);
+        const s = target.selectionStart ?? target.value.length, e = target.selectionEnd ?? s;
+        target.value = target.value.slice(0, s) + chip.dataset.insert + target.value.slice(e);
+        target.focus();
+        target.setSelectionRange(s + chip.dataset.insert.length, s + chip.dataset.insert.length);
+        target.dispatchEvent(new Event("input"));
+      }));
+      $("[data-reset]", box).addEventListener("click", () => {
+        ts.title = t.default_title; ts.message = t.default_message;
+        $("[data-k=title]", box).value = ts.title;
+        $("[data-k=message]", box).value = ts.message;
+        markDirty();
+        updatePreview(t);
+      });
+      $("[data-test]", box).addEventListener("click", (e) => sendTest(t, e.target, $("[data-test-msg]", box)));
+    });
+  }
+
+  function payload() {
+    return {
+      enabled: draft.enabled, user_key: draft.user_key, app_token: draft.app_token,
+      clear_app_token: draft.clear_app_token, device: draft.device, sound: draft.sound,
+      priority: draft.priority, html: draft.html, attach_poster: draft.attach_poster,
+      include_link: draft.include_link, types: draft.types,
+    };
+  }
+
+  async function checkKey() {
+    const msg = $("#checkMsg"), btn = $("#checkBtn");
+    btn.disabled = true;
+    msg.className = "help"; msg.textContent = "Checking with Pushover…";
+    try {
+      const res = await api(`api/profiles/${encodeURIComponent(profileId)}/validate`, "POST",
+        { user_key: draft.user_key, app_token: draft.clear_app_token ? "" : draft.app_token });
+      devices = res.devices; sounds = res.sounds;
+      $("#device").innerHTML = deviceOptions();
+      $("#sound").innerHTML = soundOptions(draft.sound, "Pushover app default");
+      state.types.forEach((t) => {
+        const sel = $(`.type[data-type="${CSS.escape(t.key)}"] [data-k=sound]`);
+        if (sel) sel.innerHTML = soundOptions(draft.types[t.key].sound || "", "Same as default");
+      });
+      msg.className = "help status-ok";
+      msg.textContent = devices.length ? `Key works. Devices: ${devices.join(", ")}.` : "Key works. No devices are registered yet; install the Pushover app to receive messages.";
+    } catch (e) {
+      if (!expired) { msg.className = "help status-err"; msg.textContent = e.message; }
+    } finally {
+      btn.disabled = expired;
+    }
+  }
+
+  async function sendTest(t, btn, out) {
+    btn.disabled = true;
+    out.className = "help"; out.textContent = "Sending…";
+    try {
+      await api(`api/profiles/${encodeURIComponent(profileId)}/test`, "POST", { settings: payload(), type: t.key });
+      out.className = "help status-ok"; out.textContent = "Sent. Check your device.";
+    } catch (e) {
+      if (!expired) { out.className = "help status-err"; out.textContent = e.message; }
+    } finally {
+      btn.disabled = expired;
+    }
+  }
+
+  $("#saveBtn").addEventListener("click", async () => {
+    const btn = $("#saveBtn");
+    btn.disabled = true;
+    barMessage("Saving…");
+    try {
+      const res = await api("api/profiles/" + encodeURIComponent(profileId), "PUT", payload());
+      const summary = state.profiles.find((p) => p.id === profileId);
+      if (summary) { summary.configured = true; summary.enabled = res.profile.enabled; }
+      view = res.profile;
+      draft = JSON.parse(JSON.stringify(view));
+      draft.user_key = ""; draft.app_token = ""; draft.clear_app_token = false;
+      dirty = false;
+      renderAll();
+      if (res.warning) barMessage(res.warning, "err"); else barMessage("Saved", "ok");
+    } catch (e) {
+      if (!expired) barMessage(e.message, "err");
+    } finally {
+      btn.disabled = expired;
+    }
+  });
+
+  $("#removeBtn").addEventListener("click", async () => {
+    if (!confirm(`Stop sending ${view.profile_name}'s notifications to Pushover and forget its keys?`)) return;
+    try {
+      await api("api/profiles/" + encodeURIComponent(profileId), "DELETE");
+      const summary = state.profiles.find((p) => p.id === profileId);
+      if (summary) { summary.configured = false; summary.enabled = false; }
+      await loadProfile();
+      barMessage("Removed", "ok");
+    } catch (e) {
+      if (!expired) barMessage(e.message, "err");
+    }
+  });
+
+  window.addEventListener("beforeunload", (e) => { if (dirty && !expired) e.preventDefault(); });
+
+  init();
+})();
+</script>
+</body>
+</html>

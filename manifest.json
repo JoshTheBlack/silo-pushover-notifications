@@ -1,0 +1,89 @@
+{
+  "plugin_id": "silo.pushover",
+  "version": "0.2.0",
+  "silo_api_version": "v1",
+  "category": "Notifications",
+  "supported_platforms": [
+    { "os": "linux", "arch": "amd64" },
+    { "os": "linux", "arch": "arm64" },
+    { "os": "darwin", "arch": "arm64" }
+  ],
+  "capabilities": [
+    {
+      "type": "event_consumer.v1",
+      "id": "pushover_events",
+      "display_name": "Pushover delivery",
+      "description": "Forwards each profile's Silo notifications to Pushover.",
+      "subscriptions": ["notification.created"]
+    },
+    {
+      "type": "http_routes.v1",
+      "id": "pushover_ui",
+      "display_name": "Pushover settings",
+      "description": "Per-profile Pushover settings page."
+    }
+  ],
+  "global_config_schema": [
+    {
+      "key": "pushover",
+      "title": "Pushover",
+      "description": "Server-wide settings. Each profile adds its own Pushover user key from Apps > Pushover.",
+      "json_schema": "{\"type\":\"object\",\"properties\":{\"silo_api_key\":{\"type\":\"string\"},\"default_app_token\":{\"type\":\"string\"},\"public_url\":{\"type\":\"string\"}},\"additionalProperties\":false}",
+      "admin_form": {
+        "fields": [
+          {
+            "key": "silo_api_key",
+            "label": "Silo admin API key",
+            "description": "An unscoped API key owned by an admin account. The plugin uses it only to confirm which profiles belong to the signed-in account.",
+            "control": "ADMIN_FORM_CONTROL_PASSWORD",
+            "secret": true,
+            "required": true,
+            "placeholder": "sa_..."
+          },
+          {
+            "key": "default_app_token",
+            "label": "Shared Pushover application token (optional)",
+            "description": "Used for profiles that don't enter their own application token. Leave blank to require every profile to bring its own. Pushover limits each application to 10,000 messages a month.",
+            "control": "ADMIN_FORM_CONTROL_PASSWORD",
+            "secret": true
+          },
+          {
+            "key": "public_url",
+            "label": "Public URL override (optional)",
+            "description": "Base URL for \"Open in Silo\" links. Defaults to the server's configured public URL.",
+            "control": "ADMIN_FORM_CONTROL_TEXT",
+            "placeholder": "https://silo.example.com"
+          }
+        ],
+        "submit_label": "Save settings"
+      }
+    }
+  ],
+  "http_routes": [
+    {
+      "id": "settings-page",
+      "method": "GET",
+      "path": "/",
+      "access": "authenticated",
+      "navigable": true,
+      "navigation_label": "Pushover",
+      "navigation_kind": "user"
+    },
+    {
+      "id": "settings-api",
+      "method": "*",
+      "path": "/api/*",
+      "access": "authenticated"
+    }
+  ],
+  "presentation": {
+    "display_name": "Pushover Notifications",
+    "summary": "Send each profile's Silo notifications to Pushover.",
+    "description_markdown": "Delivers Silo's per-profile notifications (new episodes and request updates) to Pushover, with per-profile keys, devices, sounds, priorities and message wording.",
+    "setup_markdown": "1. Create an unscoped API key on an admin account and paste it into **Silo admin API key**.\n2. Optionally register an application at https://pushover.net/apps and paste its token into **Shared Pushover application token**. Without one, each profile must enter its own.\n3. Each profile opens **Apps > Pushover** to add their Pushover user key and choose which notifications to receive.",
+    "homepage_url": "https://github.com/joshtheblack/silo-pushover-notifications",
+    "source_url": "https://github.com/joshtheblack/silo-pushover-notifications",
+    "publisher_name": "Josh Black",
+    "license_spdx": "MIT"
+  }
+}
