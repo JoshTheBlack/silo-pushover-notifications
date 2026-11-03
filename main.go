@@ -129,7 +129,12 @@ func (s *runtimeServer) GetManifest(context.Context, *pluginv1.GetManifestReques
 }
 
 func (s *runtimeServer) Configure(_ context.Context, req *pluginv1.ConfigureRequest) (*pluginv1.ConfigureResponse, error) {
-	s.plugin.setConfig(parseAdminConfig(req.GetConfig()))
+	cfg := parseAdminConfig(req.GetConfig())
+	s.plugin.setConfig(cfg)
+	if cfg.LegacyKeyStored {
+		// Only the fact, never the value.
+		s.plugin.logger.Info("the unscoped Silo API key saved by version 0.2.0 is still stored with this plugin's settings; it is ignored. Revoke it under Admin > API Keys.")
+	}
 	return &pluginv1.ConfigureResponse{}, nil
 }
 

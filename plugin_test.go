@@ -19,6 +19,7 @@ import (
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
 	"github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/imagevariant"
+	publicmanifest "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/manifest"
 	"github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/runtimehost"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -67,6 +68,11 @@ func (f *fakePushover) handler(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.PostForm.Get("user"), "bad") {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = io.WriteString(w, `{"status":0,"errors":["user key is invalid"]}`)
+			return
+		}
+		if strings.HasPrefix(r.PostForm.Get("token"), "bad") {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"status":0,"errors":["application token is invalid"]}`)
 			return
 		}
 		_, _ = io.WriteString(w, `{"status":1,"devices":["iphone","desktop"]}`)
@@ -123,13 +129,30 @@ type harness struct {
 	state    *memoryState
 	siloURL  string
 	pushURL  string
+	// siloCalls counts profile list requests; siloAuth records the
+	// Authorization headers the fake Silo saw.
+	siloCalls atomic.Int32
+	siloMu    sync.Mutex
+	siloAuth  []string
+	siloDown  atomic.Bool
 }
 
 // testPoster is the image the fake Silo serves at /poster.jpg and /card.jpg.
 var testPoster = []byte("\xff\xd8\xff\xe0 fake jpeg")
 
-// newHarness wires a plugin to a fake Silo (user 7 owns profiles p1 "Josh"
-// and p2 "Kid") and a fake Pushover.
+// Keys the fake Silo knows: the read-only key lists profiles, the
+// wrong-scope key gets 403, anything else 401.
+const (
+	testMonitorKey    = "sa_monitor"
+	testWrongScopeKey = "sa_wrong_scope"
+	testLegacyKey     = "sa_legacy_full_access_secret"
+)
+
+// testProfileNames are user 7's profiles in the fake Silo. p1 is primary. p2
+// and p3 share a name, which 0.2.0's name matching mixed up.
+var testProfileNames = map[string]string{"p1": "Josh", "p2": "Kid", "p3": "Kid"}
+
+// newHarness wires a plugin to a fake Silo and a fake Pushover.
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	fp := &fakePushover{}
@@ -137,6 +160,7 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(pushoverSrv.Close)
 
 	slowPoster := make(chan struct{})
+	h := &harness{pushover: fp, pushURL: pushoverSrv.URL}
 	silo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/poster.jpg", "/card.jpg":
@@ -150,21 +174,30 @@ func newHarness(t *testing.T) *harness {
 			}
 			return
 		}
-		if r.Header.Get("Authorization") != "Bearer sa_admin" {
+		h.siloCalls.Add(1)
+		h.siloMu.Lock()
+		h.siloAuth = append(h.siloAuth, r.Header.Get("Authorization"))
+		h.siloMu.Unlock()
+		switch {
+		case r.Method != http.MethodGet:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		case h.siloDown.Load():
+			w.WriteHeader(http.StatusBadGateway)
+		case r.Header.Get("Authorization") == "Bearer "+testWrongScopeKey:
+			w.WriteHeader(http.StatusForbidden)
+		case r.Header.Get("Authorization") != "Bearer "+testMonitorKey:
 			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		if r.URL.Path != "/api/v2/admin/users/7/profiles" {
+		case r.URL.Path != "/api/v2/admin/users/7/profiles":
 			http.NotFound(w, r)
-			return
+		default:
+			_, _ = io.WriteString(w, `{"items":[{"id":"p1","name":"Josh"},{"id":"p2","name":"Kid"},{"id":"p3","name":"Kid"}]}`)
 		}
-		_, _ = io.WriteString(w, `{"items":[{"id":"p1","name":"Josh"},{"id":"p2","name":"Kid"}],"page":{"has_more":false}}`)
 	}))
 	t.Cleanup(silo.Close)
 	t.Cleanup(func() { close(slowPoster) })
 
 	state := &memoryState{values: map[string][]byte{}}
-	h := &harness{pushover: fp, state: state, siloURL: silo.URL, pushURL: pushoverSrv.URL}
+	h.state, h.siloURL = state, silo.URL
 	h.plugin = h.newPlugin(state)
 	h.routes = &routesServer{plugin: h.plugin}
 	h.events = &eventServer{plugin: h.plugin}
@@ -182,8 +215,15 @@ func (h *harness) newPlugin(state stateBackend) *Plugin {
 	p.resolveImagesFn = func(context.Context, []string, string) (map[string]string, error) {
 		return nil, errHostUnavailable
 	}
-	p.setConfig(adminConfig{SiloAPIKey: "sa_admin", DefaultAppToken: testAppToken})
+	p.setConfig(adminConfig{MonitorAPIKey: testMonitorKey, DefaultAppToken: testAppToken})
 	return p
+}
+
+// siloAuthHeaders returns the Authorization headers the fake Silo has seen.
+func (h *harness) siloAuthHeaders() []string {
+	h.siloMu.Lock()
+	defer h.siloMu.Unlock()
+	return append([]string(nil), h.siloAuth...)
 }
 
 // configure saves enabled Pushover settings for profile p1.
@@ -206,12 +246,36 @@ func episodeEvent(eventID, deliveryID string, extra map[string]any) *pluginv1.Ha
 	return &pluginv1.HandleEventRequest{EventName: eventNotificationCreated, EventId: eventID, Payload: payload}
 }
 
-func (h *harness) request(t *testing.T, method, path, profileName string, primary bool, body any) (int, map[string]any) {
-	t.Helper()
-	headers := map[string]string{"X-Silo-User-Id": "7", "X-Silo-Profile-Name": profileName}
-	if primary {
+// viewerAs describes the headers Silo's proxy sends for one request.
+type viewerAs struct {
+	profileID string
+	primary   bool
+	admin     bool
+}
+
+var (
+	asPrimary = viewerAs{profileID: "p1", primary: true, admin: true}
+	asKid     = viewerAs{profileID: "p2"}
+)
+
+func (v viewerAs) headers() map[string]string {
+	headers := map[string]string{"X-Silo-User-Id": "7", "X-Silo-User-Role": "user"}
+	if v.profileID != "" {
+		headers["X-Silo-Profile-Id"] = v.profileID
+		headers["X-Silo-Profile-Name"] = testProfileNames[v.profileID]
+	}
+	if v.primary {
 		headers["X-Silo-Profile-Primary"] = "true"
 	}
+	if v.admin {
+		headers["X-Silo-User-Role"] = "admin"
+	}
+	return headers
+}
+
+func (h *harness) request(t *testing.T, method, path string, as viewerAs, body any) (int, map[string]any) {
+	t.Helper()
+	headers := as.headers()
 	var raw []byte
 	if body != nil {
 		raw, _ = json.Marshal(body)
@@ -291,10 +355,153 @@ func TestStorePersistsAcrossReload(t *testing.T) {
 }
 
 func TestParseAdminConfig(t *testing.T) {
-	value, _ := structpb.NewStruct(map[string]any{"silo_api_key": " sa_x ", "default_app_token": "tok", "public_url": "https://s.example/"})
+	value, _ := structpb.NewStruct(map[string]any{
+		"monitor_api_key": " sa_m ", "control_api_key": "sa_c", "default_app_token": "tok", "public_url": "https://s.example/",
+	})
 	cfg := parseAdminConfig([]*pluginv1.ConfigEntry{{Key: "other"}, {Key: adminConfigKey, Value: value}})
-	if cfg.SiloAPIKey != "sa_x" || cfg.DefaultAppToken != "tok" || cfg.PublicURL != "https://s.example" {
-		t.Fatalf("unexpected config: %+v", cfg)
+	want := adminConfig{MonitorAPIKey: "sa_m", ControlAPIKey: "sa_c", DefaultAppToken: "tok", PublicURL: "https://s.example"}
+	if cfg != want {
+		t.Fatalf("config = %+v, want %+v", cfg, want)
+	}
+}
+
+// configureWith runs Configure the way Silo does after an upgrade from 0.2.0:
+// the stored row still holds silo_api_key. Everything the plugin logs from
+// then on goes to the returned buffer.
+func configureWith(t *testing.T, h *harness, fields map[string]any) *syncBuffer {
+	t.Helper()
+	logs := &syncBuffer{}
+	h.plugin.logger = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	value, _ := structpb.NewStruct(fields)
+	rt := &runtimeServer{plugin: h.plugin}
+	if _, err := rt.Configure(context.Background(), &pluginv1.ConfigureRequest{Config: []*pluginv1.ConfigEntry{{Key: adminConfigKey, Value: value}}}); err != nil {
+		t.Fatal(err)
+	}
+	return logs
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+func TestUpgradeIgnoresLegacyAPIKey(t *testing.T) {
+	h := newHarness(t)
+	logs := configureWith(t, h, map[string]any{"silo_api_key": testLegacyKey, "default_app_token": testAppToken})
+	cfg := h.plugin.config()
+	if !cfg.LegacyKeyStored || cfg.MonitorAPIKey != "" || cfg.DefaultAppToken != testAppToken {
+		t.Fatalf("unexpected config after upgrade: %+v", cfg)
+	}
+	if !strings.Contains(logs.String(), "0.2.0") {
+		t.Fatalf("expected a note about the stored 0.2.0 key, got %q", logs)
+	}
+
+	// The page works without the old key, and Silo never sees it.
+	status, state := h.request(t, http.MethodGet, "/api/state", asPrimary, nil)
+	if status != http.StatusOK || state["problem"] != nil {
+		t.Fatalf("state after upgrade: %d %v", status, state)
+	}
+	if notice := state["notice"].(map[string]any); notice["code"] != "monitor_key_missing" {
+		t.Fatalf("notice = %v, want monitor_key_missing", notice)
+	}
+	if status, _ := h.request(t, http.MethodPut, "/api/profiles/p1", asPrimary, map[string]any{"enabled": true, "user_key": testUserKey}); status != http.StatusOK {
+		t.Fatalf("save after upgrade: status %d", status)
+	}
+	if n := h.siloCalls.Load(); n != 0 {
+		t.Fatalf("Silo was called %d times without a read-only key", n)
+	}
+
+	// Nothing the plugin logs or returns contains the key, even with the
+	// config itself logged.
+	h.plugin.logger.Info("config", "config", h.plugin.config())
+	_, body := h.request(t, http.MethodGet, "/api/state", asPrimary, nil)
+	raw, _ := json.Marshal(body)
+	for _, out := range []string{logs.String(), string(raw)} {
+		if strings.Contains(out, testLegacyKey) {
+			t.Fatal("the legacy key leaked")
+		}
+	}
+}
+
+func TestConfigNeverLogsKeys(t *testing.T) {
+	var logs strings.Builder
+	cfg := adminConfig{MonitorAPIKey: testMonitorKey, ControlAPIKey: "sa_control_secret", DefaultAppToken: testAppToken}
+	slog.New(slog.NewTextHandler(&logs, nil)).Info("x", "config", cfg)
+	for _, secret := range []string{testMonitorKey, "sa_control_secret", testAppToken} {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatalf("logged config contains a key: %s", logs.String())
+		}
+	}
+}
+
+// TestManifestUpgradeSchema checks the manifest the way Silo does: it must
+// load, put every admin field in a section, no longer declare silo_api_key,
+// and accept blank optional keys. Silo validates only the declared
+// fields of a save (globalConfigValidationProjection in silo-server
+// internal/plugins/service_admin_config.go), so the stored silo_api_key
+// doesn't trip additionalProperties: false.
+func TestManifestUpgradeSchema(t *testing.T) {
+	manifest, err := publicmanifest.LoadWithChecksum(manifestJSON, "")
+	if err != nil {
+		t.Fatalf("manifest doesn't load: %v", err)
+	}
+	var schema *pluginv1.ConfigSchema
+	for _, s := range manifest.GetGlobalConfigSchema() {
+		if s.GetKey() == adminConfigKey {
+			schema = s
+		}
+	}
+	if schema == nil {
+		t.Fatal("no pushover config schema")
+	}
+	if strings.Contains(schema.GetJsonSchema(), legacyAPIKeyField) {
+		t.Fatal("json_schema still declares silo_api_key")
+	}
+	inSection := map[string]bool{}
+	for _, s := range schema.GetAdminForm().GetSections() {
+		for _, k := range s.GetFieldKeys() {
+			inSection[k] = true
+		}
+	}
+	for _, f := range schema.GetAdminForm().GetFields() {
+		if !inSection[f.GetKey()] {
+			t.Errorf("field %s is in no section", f.GetKey())
+		}
+		if f.GetKey() == legacyAPIKeyField {
+			t.Error("admin form still has silo_api_key")
+		}
+		if strings.HasSuffix(f.GetKey(), "_api_key") && (!f.GetSecret() || f.GetRequired()) {
+			t.Errorf("%s should be an optional secret", f.GetKey())
+		}
+	}
+	// Every form field is a plain, unconstrained string in the schema, so a
+	// blank optional key saves.
+	var doc struct {
+		Properties map[string]map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(schema.GetJsonSchema()), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Properties) != len(schema.GetAdminForm().GetFields()) {
+		t.Fatalf("schema declares %d properties for %d form fields", len(doc.Properties), len(schema.GetAdminForm().GetFields()))
+	}
+	for _, f := range schema.GetAdminForm().GetFields() {
+		prop, ok := doc.Properties[f.GetKey()]
+		if !ok || len(prop) != 1 || prop["type"] != "string" {
+			t.Errorf("schema property %s = %v, want {type: string}", f.GetKey(), prop)
+		}
 	}
 }
 
@@ -701,34 +908,218 @@ func (f *flakyState) Read(ctx context.Context, key string) ([]byte, bool, error)
 	return f.memoryState.Read(ctx, key)
 }
 
-func TestNonPrimaryProfileSeesOnlyItself(t *testing.T) {
+// profileIDs lists the IDs in a state response.
+func profileIDs(state map[string]any) []string {
+	var ids []string
+	list, _ := state["profiles"].([]any)
+	for _, p := range list {
+		ids = append(ids, p.(map[string]any)["id"].(string))
+	}
+	return ids
+}
+
+func TestSecondaryProfileSeesOnlyItself(t *testing.T) {
 	h := newHarness(t)
-	status, state := h.request(t, http.MethodGet, "/api/state", "Kid", false, nil)
+	status, state := h.request(t, http.MethodGet, "/api/state", asKid, nil)
 	if status != http.StatusOK {
 		t.Fatalf("state status %d: %v", status, state)
 	}
-	profiles := state["profiles"].([]any)
-	if len(profiles) != 1 || profiles[0].(map[string]any)["id"] != "p2" {
-		t.Fatalf("Kid should only see p2, got %v", profiles)
+	if ids := profileIDs(state); len(ids) != 1 || ids[0] != "p2" {
+		t.Fatalf("Kid should only see p2, got %v", ids)
 	}
-	if status, _ := h.request(t, http.MethodGet, "/api/profiles/p1", "Kid", false, nil); status != http.StatusNotFound {
-		t.Fatalf("Kid reading p1: status %d, want 404", status)
+	if state["notice"] != nil {
+		t.Fatalf("a secondary profile shouldn't get household notices: %v", state["notice"])
+	}
+	for _, path := range []string{"/api/profiles/p1", "/api/profiles/p3"} {
+		if status, _ := h.request(t, http.MethodGet, path, asKid, nil); status != http.StatusNotFound {
+			t.Fatalf("Kid reading %s: status %d, want 404", path, status)
+		}
+	}
+	if n := h.siloCalls.Load(); n != 0 {
+		t.Fatalf("a secondary profile needs no Silo call, made %d", n)
+	}
+}
+
+// Two profiles named "Kid": each is told apart by its ID, so saving as p3
+// doesn't touch p2 (0.2.0 matched by name and picked p2 for both).
+func TestIdentityComesFromProfileIDHeader(t *testing.T) {
+	h := newHarness(t)
+	asKid2 := viewerAs{profileID: "p3"}
+	status, state := h.request(t, http.MethodGet, "/api/state", asKid2, nil)
+	if ids := profileIDs(state); status != http.StatusOK || len(ids) != 1 || ids[0] != "p3" {
+		t.Fatalf("second Kid: status %d, profiles %v", status, ids)
+	}
+	if status, body := h.request(t, http.MethodPut, "/api/profiles/p3", asKid2, map[string]any{"enabled": true, "user_key": testUserKey}); status != http.StatusOK {
+		t.Fatalf("save: %d %v", status, body)
+	}
+	if _, found, _ := h.plugin.store.Get(context.Background(), "p2"); found {
+		t.Fatal("saving as p3 wrote p2's settings")
+	}
+	if s, found, _ := h.plugin.store.Get(context.Background(), "p3"); !found || s.UserID != 7 || s.ProfileName != "Kid" {
+		t.Fatalf("p3 settings = %+v", s)
 	}
 
-	status, state = h.request(t, http.MethodGet, "/api/state", "Josh", true, nil)
-	if status != http.StatusOK || len(state["profiles"].([]any)) != 2 {
-		t.Fatalf("primary should see both profiles: %d %v", status, state)
+	// No profile ID: the page asks the viewer to pick a profile.
+	status, state = h.request(t, http.MethodGet, "/api/state", viewerAs{}, nil)
+	if problem, _ := state["problem"].(map[string]any); status != http.StatusOK || problem["code"] != "no_profile" {
+		t.Fatalf("no profile: %d %v", status, state)
+	}
+}
+
+func TestPrimaryManagesHouseholdWithMonitorKey(t *testing.T) {
+	h := newHarness(t)
+	status, state := h.request(t, http.MethodGet, "/api/state", asPrimary, nil)
+	if status != http.StatusOK || state["household"] != "all" || state["notice"] != nil {
+		t.Fatalf("state: %d %v", status, state)
+	}
+	if ids := profileIDs(state); strings.Join(ids, ",") != "p1,p2,p3" {
+		t.Fatalf("primary profiles = %v, want p1,p2,p3 (active first)", ids)
+	}
+	if status, body := h.request(t, http.MethodPut, "/api/profiles/p2", asPrimary, map[string]any{"enabled": true, "user_key": testUserKey}); status != http.StatusOK {
+		t.Fatalf("primary saving p2: %d %v", status, body)
+	}
+	// The profile list is cached, and only the read-only key is sent.
+	if n := h.siloCalls.Load(); n != 1 {
+		t.Fatalf("Silo profile list called %d times, want 1 (cached)", n)
+	}
+	for _, auth := range h.siloAuthHeaders() {
+		if auth != "Bearer "+testMonitorKey {
+			t.Fatalf("Silo got Authorization %q", auth)
+		}
+	}
+}
+
+func TestPrimaryWithoutKeySeesConfiguredProfiles(t *testing.T) {
+	h := newHarness(t)
+	h.plugin.setConfig(adminConfig{DefaultAppToken: testAppToken})
+	ctx := context.Background()
+	// p2 set itself up; p9 belongs to another account.
+	if status, _ := h.request(t, http.MethodPut, "/api/profiles/p2", asKid, map[string]any{"enabled": true, "user_key": testUserKey}); status != http.StatusOK {
+		t.Fatalf("Kid saving p2: %d", status)
+	}
+	if err := h.plugin.store.Put(ctx, &ProfileSettings{ProfileID: "p9", ProfileName: "Neighbour", UserID: 8, UserKey: testUserKey}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, state := h.request(t, http.MethodGet, "/api/state", asPrimary, nil)
+	if status != http.StatusOK || state["household"] != "configured" {
+		t.Fatalf("state: %d %v", status, state)
+	}
+	if ids := profileIDs(state); strings.Join(ids, ",") != "p1,p2" {
+		t.Fatalf("primary profiles = %v, want p1,p2", ids)
+	}
+	notice := state["notice"].(map[string]any)
+	if notice["code"] != "monitor_key_missing" || notice["level"] != "info" || !strings.Contains(notice["message"].(string), "admin:monitor:read") {
+		t.Fatalf("notice = %v", notice)
+	}
+	for path, want := range map[string]int{"/api/profiles/p2": http.StatusOK, "/api/profiles/p3": http.StatusNotFound, "/api/profiles/p9": http.StatusNotFound} {
+		if status, _ := h.request(t, http.MethodGet, path, asPrimary, nil); status != want {
+			t.Fatalf("primary GET %s: %d, want %d", path, status, want)
+		}
+	}
+
+	// A primary profile that isn't an admin isn't told to change admin settings.
+	_, state = h.request(t, http.MethodGet, "/api/state", viewerAs{profileID: "p1", primary: true}, nil)
+	if msg := state["notice"].(map[string]any)["message"].(string); strings.Contains(msg, adminFormPath) {
+		t.Fatalf("non-admin notice mentions the admin form: %q", msg)
+	}
+	if n := h.siloCalls.Load(); n != 0 {
+		t.Fatalf("Silo called %d times without a key", n)
+	}
+}
+
+func TestHouseholdKeyProblemsShowNotices(t *testing.T) {
+	cases := []struct {
+		name, key, code string
+		down            bool
+	}{
+		{"rejected", "sa_revoked", "monitor_key_rejected", false},
+		{"wrong scope", testWrongScopeKey, "monitor_key_scope", false},
+		{"Silo error", testMonitorKey, "silo_unavailable", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.plugin.setConfig(adminConfig{MonitorAPIKey: c.key, DefaultAppToken: testAppToken})
+			h.siloDown.Store(c.down)
+			h.configure(t, func(s *ProfileSettings) { s.ProfileID, s.ProfileName, s.UserID = "p2", "Kid", 7 })
+
+			for _, as := range []viewerAs{asPrimary, {profileID: "p1", primary: true}} {
+				status, state := h.request(t, http.MethodGet, "/api/state", as, nil)
+				if status != http.StatusOK || state["household"] != "configured" {
+					t.Fatalf("state: %d %v", status, state)
+				}
+				if ids := profileIDs(state); strings.Join(ids, ",") != "p1,p2" {
+					t.Fatalf("fallback profiles = %v, want p1,p2", ids)
+				}
+				notice := state["notice"].(map[string]any)
+				if notice["code"] != c.code || notice["level"] != "warn" {
+					t.Fatalf("notice = %v, want %s", notice, c.code)
+				}
+				mentionsForm := strings.Contains(notice["message"].(string), adminFormPath)
+				if c.code != "silo_unavailable" && mentionsForm != as.admin {
+					t.Fatalf("admin=%v but message mentioning the admin form = %v: %q", as.admin, mentionsForm, notice["message"])
+				}
+			}
+		})
+	}
+}
+
+func TestSiloClientCachesKeyErrors(t *testing.T) {
+	h := newHarness(t)
+	c := h.plugin.silo
+	ctx := context.Background()
+	for range 2 {
+		if _, err := c.AccountProfiles(ctx, h.siloURL, "sa_revoked", 7); !errors.Is(err, errSiloKeyRejected) {
+			t.Fatalf("err = %v, want errSiloKeyRejected", err)
+		}
+	}
+	if n := h.siloCalls.Load(); n != 1 {
+		t.Fatalf("rejected key called Silo %d times, want 1 (cached)", n)
+	}
+	// A key change clears the cache.
+	c.Invalidate()
+	if _, err := c.AccountProfiles(ctx, h.siloURL, testWrongScopeKey, 7); !errors.Is(err, errSiloKeyScope) {
+		t.Fatalf("err = %v, want errSiloKeyScope", err)
+	}
+	if _, err := c.AccountProfiles(ctx, h.siloURL, "", 7); !errors.Is(err, errSiloKeyMissing) {
+		t.Fatalf("err = %v, want errSiloKeyMissing", err)
+	}
+	// Other failures (Silo down, network) aren't cached.
+	h.siloDown.Store(true)
+	c.Invalidate()
+	for range 2 {
+		if _, err := c.AccountProfiles(ctx, h.siloURL, testMonitorKey, 7); err == nil {
+			t.Fatal("want an error while Silo is down")
+		}
+	}
+	if n := h.siloCalls.Load(); n != 4 {
+		t.Fatalf("Silo calls = %d, want 4", n)
+	}
+}
+
+func TestCheckKeyHonorsRemovedToken(t *testing.T) {
+	h := newHarness(t)
+	badToken := "bad" + testAppToken[3:]
+	h.configure(t, func(s *ProfileSettings) { s.ProfileID, s.ProfileName, s.UserID, s.AppToken = "p2", "Kid", 7, badToken })
+
+	if status, _ := h.request(t, http.MethodPost, "/api/profiles/p2/validate", asKid, map[string]any{}); status != http.StatusUnprocessableEntity {
+		t.Fatalf("check with the saved bad token: %d, want 422", status)
+	}
+	// "Remove my saved token" then "Check key" checks the shared token.
+	if status, body := h.request(t, http.MethodPost, "/api/profiles/p2/validate", asKid, map[string]any{"clear_app_token": true}); status != http.StatusOK {
+		t.Fatalf("check with the token removed: %d %v", status, body)
 	}
 }
 
 func TestSaveValidatesAndMasksKeys(t *testing.T) {
 	h := newHarness(t)
-	status, body := h.request(t, http.MethodPut, "/api/profiles/p2", "Kid", false, map[string]any{"enabled": true, "user_key": "bad" + testUserKey[3:]})
+	status, body := h.request(t, http.MethodPut, "/api/profiles/p2", asKid, map[string]any{"enabled": true, "user_key": "bad" + testUserKey[3:]})
 	if status != http.StatusUnprocessableEntity {
 		t.Fatalf("bad key: status %d, want 422 (%v)", status, body)
 	}
 
-	status, body = h.request(t, http.MethodPut, "/api/profiles/p2", "Kid", false, map[string]any{"enabled": true, "user_key": testUserKey, "sound": "mychime"})
+	status, body = h.request(t, http.MethodPut, "/api/profiles/p2", asKid, map[string]any{"enabled": true, "user_key": testUserKey, "sound": "mychime"})
 	if status != http.StatusOK {
 		t.Fatalf("save: status %d (%v)", status, body)
 	}
@@ -742,7 +1133,7 @@ func TestSaveValidatesAndMasksKeys(t *testing.T) {
 	}
 
 	// Saving again without re-entering the key keeps it.
-	status, _ = h.request(t, http.MethodPut, "/api/profiles/p2", "Kid", false, map[string]any{"enabled": false})
+	status, _ = h.request(t, http.MethodPut, "/api/profiles/p2", asKid, map[string]any{"enabled": false})
 	if status != http.StatusOK {
 		t.Fatalf("resave: status %d", status)
 	}
@@ -754,31 +1145,23 @@ func TestSaveValidatesAndMasksKeys(t *testing.T) {
 
 func TestSaveRequiresTokenWithoutServerDefault(t *testing.T) {
 	h := newHarness(t)
-	h.plugin.setConfig(adminConfig{SiloAPIKey: "sa_admin"})
-	status, _ := h.request(t, http.MethodPut, "/api/profiles/p2", "Kid", false, map[string]any{"enabled": true, "user_key": testUserKey})
+	h.plugin.setConfig(adminConfig{})
+	status, _ := h.request(t, http.MethodPut, "/api/profiles/p2", asKid, map[string]any{"enabled": true, "user_key": testUserKey})
 	if status != http.StatusUnprocessableEntity {
 		t.Fatalf("status %d, want 422", status)
 	}
-	status, _ = h.request(t, http.MethodPut, "/api/profiles/p2", "Kid", false, map[string]any{"enabled": true, "user_key": testUserKey, "app_token": testAppToken})
+	status, _ = h.request(t, http.MethodPut, "/api/profiles/p2", asKid, map[string]any{"enabled": true, "user_key": testUserKey, "app_token": testAppToken})
 	if status != http.StatusOK {
 		t.Fatalf("status %d with own token, want 200", status)
 	}
 }
 
-func TestStateReportsMissingSetup(t *testing.T) {
-	h := newHarness(t)
-	h.plugin.setConfig(adminConfig{})
-	status, state := h.request(t, http.MethodGet, "/api/state", "Josh", true, nil)
-	if status != http.StatusOK || state["problem"].(map[string]any)["code"] != "setup_required" {
-		t.Fatalf("status %d state %v", status, state)
-	}
-}
-
 func TestMutationsRequireJSON(t *testing.T) {
 	h := newHarness(t)
+	headers := asPrimary.headers()
+	headers["Content-Type"] = "application/x-www-form-urlencoded"
 	resp, _ := h.routes.Handle(context.Background(), &pluginv1.HandleHTTPRequest{
-		Method: http.MethodPut, Path: "/api/profiles/p1",
-		Headers: map[string]string{"X-Silo-User-Id": "7", "X-Silo-Profile-Name": "Josh", "Content-Type": "application/x-www-form-urlencoded"},
+		Method: http.MethodPut, Path: "/api/profiles/p1", Headers: headers,
 	})
 	if resp.GetStatusCode() != http.StatusUnsupportedMediaType {
 		t.Fatalf("status %d, want 415", resp.GetStatusCode())

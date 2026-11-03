@@ -28,18 +28,9 @@
       "key": "pushover",
       "title": "Pushover",
       "description": "Server-wide settings. Each profile adds its own Pushover user key from Apps > Pushover.",
-      "json_schema": "{\"type\":\"object\",\"properties\":{\"silo_api_key\":{\"type\":\"string\"},\"default_app_token\":{\"type\":\"string\"},\"public_url\":{\"type\":\"string\"}},\"additionalProperties\":false}",
+      "json_schema": "{\"type\":\"object\",\"properties\":{\"default_app_token\":{\"type\":\"string\"},\"public_url\":{\"type\":\"string\"},\"monitor_api_key\":{\"type\":\"string\"},\"control_api_key\":{\"type\":\"string\"}},\"additionalProperties\":false}",
       "admin_form": {
         "fields": [
-          {
-            "key": "silo_api_key",
-            "label": "Silo admin API key",
-            "description": "An unscoped API key owned by an admin account. The plugin uses it only to confirm which profiles belong to the signed-in account.",
-            "control": "ADMIN_FORM_CONTROL_PASSWORD",
-            "secret": true,
-            "required": true,
-            "placeholder": "sa_..."
-          },
           {
             "key": "default_app_token",
             "label": "Shared Pushover application token (optional)",
@@ -53,6 +44,33 @@
             "description": "Base URL for \"Open in Silo\" links. Defaults to the server's configured public URL.",
             "control": "ADMIN_FORM_CONTROL_TEXT",
             "placeholder": "https://silo.example.com"
+          },
+          {
+            "key": "monitor_api_key",
+            "label": "Read-only Silo key (admin:monitor:read)",
+            "description": "Optional. An API key created on an admin account with only the admin:monitor:read scope. With it, each account's primary profile can set up Pushover for every profile on the account. Without it, each profile sets up its own. Don't use a full-access key.",
+            "control": "ADMIN_FORM_CONTROL_PASSWORD",
+            "secret": true
+          },
+          {
+            "key": "control_api_key",
+            "label": "Session control key (admin:sessions:control)",
+            "description": "Optional. An API key created on an admin account with the admin:sessions:control scope, for stopping streams from an alert. It can be the same key as above if that key has both scopes. Not used yet.",
+            "control": "ADMIN_FORM_CONTROL_PASSWORD",
+            "secret": true
+          }
+        ],
+        "sections": [
+          {
+            "key": "pushover",
+            "title": "Pushover",
+            "field_keys": ["default_app_token", "public_url"]
+          },
+          {
+            "key": "silo_keys",
+            "title": "Silo API keys (optional)",
+            "description": "Scoped keys let the plugin read from Silo without full admin access. Silo's API Keys page creates only full-access keys, so create these with POST /api/v2/admin/api-keys and a body like {\"label\":\"Pushover read-only\",\"scopes\":[\"admin:monitor:read\"]}.",
+            "field_keys": ["monitor_api_key", "control_api_key"]
           }
         ],
         "submit_label": "Save settings"
@@ -80,7 +98,7 @@
     "display_name": "Pushover Notifications",
     "summary": "Send each profile's Silo notifications to Pushover.",
     "description_markdown": "Delivers Silo's per-profile notifications (new episodes and request updates) to Pushover, with per-profile keys, devices, sounds, priorities and message wording.",
-    "setup_markdown": "1. Create an unscoped API key on an admin account and paste it into **Silo admin API key**.\n2. Optionally register an application at https://pushover.net/apps and paste its token into **Shared Pushover application token**. Without one, each profile must enter its own.\n3. Each profile opens **Apps > Pushover** to add their Pushover user key and choose which notifications to receive.",
+    "setup_markdown": "1. Optionally register an application at https://pushover.net/apps and paste its token into **Shared Pushover application token**. Without one, each profile must enter its own.\n2. Optionally add a **Read-only Silo key** with only the `admin:monitor:read` scope so each account's primary profile can set up every profile on the account. Silo's API Keys page makes only full-access keys, so create it with `POST /api/v2/admin/api-keys` and `{\"label\":\"Pushover read-only\",\"scopes\":[\"admin:monitor:read\"]}`.\n3. Each profile opens **Apps > Pushover** to add their Pushover user key and choose which notifications to receive.\n\nUpgrading from 0.2.0: the full-access key it asked for is no longer used. Revoke it under **Admin > API Keys**.",
     "homepage_url": "https://github.com/joshtheblack/silo-pushover-notifications",
     "source_url": "https://github.com/joshtheblack/silo-pushover-notifications",
     "publisher_name": "Josh Black",

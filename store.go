@@ -10,6 +10,7 @@ import (
 	"hash/fnv"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -201,6 +202,29 @@ func (s *profileStore) Get(ctx context.Context, profileID string) (*ProfileSetti
 		return nil, false, nil
 	}
 	return settings.clone(), true, nil
+}
+
+// ListByUser returns copies of the settings saved for one Silo account's
+// profiles, sorted by profile name.
+func (s *profileStore) ListByUser(ctx context.Context, userID int) ([]*ProfileSettings, error) {
+	if err := s.ensureLoaded(ctx); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	var out []*ProfileSettings
+	for _, settings := range s.profiles {
+		if settings.UserID == userID {
+			out = append(out, settings.clone())
+		}
+	}
+	s.mu.RUnlock()
+	slices.SortFunc(out, func(a, b *ProfileSettings) int {
+		if c := strings.Compare(strings.ToLower(a.ProfileName), strings.ToLower(b.ProfileName)); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ProfileID, b.ProfileID)
+	})
+	return out, nil
 }
 
 // Put stores a profile's settings.

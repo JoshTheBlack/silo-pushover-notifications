@@ -207,6 +207,7 @@
       notice("warn", "Pushover isn't ready yet.", " " + state.problem.message);
       return;
     }
+    if (state.notice) notice(state.notice.level === "warn" ? "warn" : "info", state.notice.title, " " + state.notice.message);
     const active = state.profiles.find((p) => p.active) || state.profiles[0];
     profileId = active.id;
     await loadProfile();
@@ -425,7 +426,7 @@
     msg.className = "help"; msg.textContent = "Checking with Pushover…";
     try {
       const res = await api(`api/profiles/${encodeURIComponent(profileId)}/validate`, "POST",
-        { user_key: draft.user_key, app_token: draft.clear_app_token ? "" : draft.app_token });
+        { user_key: draft.user_key, app_token: draft.clear_app_token ? "" : draft.app_token, clear_app_token: draft.clear_app_token });
       devices = res.devices; sounds = res.sounds;
       $("#device").innerHTML = deviceOptions();
       $("#sound").innerHTML = soundOptions(draft.sound, "Pushover app default");

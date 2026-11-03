@@ -50,15 +50,31 @@ func serveIndex(req *pluginv1.HandleHTTPRequest) *pluginv1.HandleHTTPResponse {
 	}
 }
 
-// viewer is the signed-in account as Silo's plugin proxy reports it, plus the
-// profiles it may configure: all of them from the primary profile, otherwise
-// only the active one.
+// viewer is the signed-in account and profile as Silo's plugin proxy reports
+// them, plus the profiles it may configure. A secondary profile manages only
+// itself. The primary profile manages every profile on the account when the
+// read-only Silo key works, and otherwise itself plus the account's profiles
+// that already have Pushover settings.
 type viewer struct {
-	userID      int
-	profileName string
-	primary     bool
-	activeID    string
-	profiles    []siloProfile
+	userID   int
+	activeID string
+	primary  bool
+	// admin is Silo's "acting admin": an admin account on its primary profile.
+	admin    bool
+	profiles []siloProfile
+	// household is how the primary's list was built: "all" (from Silo),
+	// "configured" (saved settings only) or "self".
+	household string
+	// notice explains a limited household list, for the primary profile.
+	notice *pageNotice
+}
+
+// pageNotice is a setup message shown at the top of the page.
+type pageNotice struct {
+	Code    string `json:"code"`
+	Level   string `json:"level"` // "info" or "warn"
+	Title   string `json:"title"`
+	Message string `json:"message"`
 }
 
 func (v *viewer) profile(id string) (siloProfile, bool) {
@@ -80,49 +96,128 @@ func apiErr(status int, code, message string) *apiError {
 	return &apiError{status: status, Code: code, Message: message}
 }
 
+const adminFormPath = "Admin > Plugins > Pushover Notifications"
+
+// resolveViewer identifies the viewer from the headers Silo's plugin proxy
+// sets. The proxy drops any the browser sends, verifies that the profile
+// belongs to the account (PIN included), and is the only way in, so the
+// headers can be trusted.
 func (p *Plugin) resolveViewer(ctx context.Context, req *pluginv1.HandleHTTPRequest) (*viewer, *apiError) {
-	// The plugin proxy sets these headers itself and drops any the browser
-	// sends, so they can be trusted.
 	userID, _ := strconv.Atoi(header(req, "X-Silo-User-Id"))
 	if userID <= 0 {
 		return nil, apiErr(http.StatusUnauthorized, "unauthenticated", "Your session for this page has expired. Open Pushover from the Silo sidebar again.")
 	}
-	info, err := p.host(ctx)
-	if err != nil || info.InternalBaseURL == "" {
-		return nil, apiErr(http.StatusServiceUnavailable, "host_unavailable", "The plugin is still starting. Try again in a moment.")
-	}
-	all, err := p.silo.UserProfiles(ctx, strings.TrimRight(info.InternalBaseURL, "/"), p.config().SiloAPIKey, userID)
-	switch {
-	case errors.Is(err, errSiloAPIKeyMissing):
-		return nil, apiErr(http.StatusServiceUnavailable, "setup_required", "An admin needs to add a Silo admin API key under Admin > Plugins > Pushover Notifications before profiles can be set up.")
-	case errors.Is(err, errSiloAPIKeyRejected):
-		return nil, apiErr(http.StatusServiceUnavailable, "setup_invalid", "Silo rejected the plugin's admin API key. Ask an admin to replace it with an unscoped key from an admin account.")
-	case err != nil:
-		p.logger.Warn("profile lookup failed", "user_id", userID, "error", err)
-		return nil, apiErr(http.StatusBadGateway, "silo_unavailable", "Couldn't look up your profiles in Silo. Try again in a moment.")
-	}
-
 	v := &viewer{
-		userID:      userID,
-		profileName: header(req, "X-Silo-Profile-Name"),
-		primary:     header(req, "X-Silo-Profile-Primary") == "true",
+		userID:    userID,
+		activeID:  header(req, "X-Silo-Profile-Id"),
+		primary:   header(req, "X-Silo-Profile-Primary") == "true",
+		admin:     header(req, "X-Silo-User-Role") == "admin",
+		household: "self",
 	}
-	if v.profileName == "" {
+	if v.activeID == "" {
 		return nil, apiErr(http.StatusConflict, "no_profile", "Choose a profile in Silo, then open Pushover from the sidebar again.")
 	}
-	for _, prof := range all {
-		active := prof.Name == v.profileName
-		if active && v.activeID == "" {
-			v.activeID = prof.ID
+
+	saved, err := p.store.ListByUser(ctx, userID)
+	if err != nil {
+		if errors.Is(err, errHostUnavailable) {
+			return nil, apiErr(http.StatusServiceUnavailable, "host_unavailable", "The plugin is still starting. Try again in a moment.")
 		}
-		if active || v.primary {
+		p.logger.Error("settings storage failed", "error", err)
+		return nil, apiErr(http.StatusInternalServerError, "storage_failed", "Couldn't read saved settings.")
+	}
+	savedNames := map[string]string{}
+	for _, s := range saved {
+		savedNames[s.ProfileID] = s.ProfileName
+	}
+
+	active := siloProfile{ID: v.activeID, Name: header(req, "X-Silo-Profile-Name")}
+	if active.Name == "" {
+		active.Name = savedNames[v.activeID]
+	}
+	if active.Name == "" {
+		active.Name = "Your profile"
+	}
+	v.profiles = []siloProfile{active}
+	if !v.primary {
+		return v, nil
+	}
+
+	household, err := p.accountProfiles(ctx, userID)
+	if err == nil {
+		v.household = "all"
+		for _, prof := range household {
+			if prof.ID == "" || prof.ID == v.activeID {
+				continue
+			}
+			if prof.Name == "" {
+				prof.Name = savedNames[prof.ID]
+			}
 			v.profiles = append(v.profiles, prof)
 		}
+		return v, nil
 	}
-	if len(v.profiles) == 0 {
-		return nil, apiErr(http.StatusConflict, "no_profile", "Couldn't find your active profile. Open Pushover from the Silo sidebar again.")
+
+	// Without a working key, add the account's profiles that already have
+	// settings: their IDs were saved from these same trusted headers.
+	v.household = "configured"
+	for _, s := range saved {
+		if s.ProfileID != v.activeID {
+			v.profiles = append(v.profiles, siloProfile{ID: s.ProfileID, Name: s.ProfileName})
+		}
+	}
+	v.notice = householdNotice(err, v.admin)
+	if !errors.Is(err, errSiloKeyMissing) {
+		p.logger.Warn("could not list the account's profiles with the read-only Silo key", "user_id", userID, "error", err)
 	}
 	return v, nil
+}
+
+// accountProfiles lists an account's profiles with the read-only key.
+func (p *Plugin) accountProfiles(ctx context.Context, userID int) ([]siloProfile, error) {
+	key := p.config().MonitorAPIKey
+	if key == "" {
+		return nil, errSiloKeyMissing
+	}
+	info, err := p.host(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return p.silo.AccountProfiles(ctx, strings.TrimRight(info.InternalBaseURL, "/"), key, userID)
+}
+
+// householdNotice explains why the primary profile sees only some profiles.
+// Admins get the fix; other accounts are told to ask an admin.
+func householdNotice(err error, admin bool) *pageNotice {
+	n := &pageNotice{Level: "warn", Title: "Some profiles may be missing."}
+	switch {
+	case errors.Is(err, errSiloKeyMissing):
+		n.Code, n.Level, n.Title = "monitor_key_missing", "info", "Other profiles show up once they set up Pushover."
+		n.Message = "Each profile on your account can set up Pushover by opening this page while signed in to that profile."
+		if admin {
+			n.Message += " To manage every profile from here instead, add a read-only Silo key (scope admin:monitor:read) under " + adminFormPath + "."
+		}
+	case errors.Is(err, errSiloKeyRejected):
+		n.Code = "monitor_key_rejected"
+		n.Message = "Silo rejected the plugin's read-only Silo key, so only profiles that already set up Pushover are listed."
+		if admin {
+			n.Message += " The key may have been revoked or pasted wrong. Create a new key with the admin:monitor:read scope and replace it under " + adminFormPath + "."
+		} else {
+			n.Message += " Let your server admin know."
+		}
+	case errors.Is(err, errSiloKeyScope):
+		n.Code = "monitor_key_scope"
+		n.Message = "The plugin's read-only Silo key isn't allowed to list profiles, so only profiles that already set up Pushover are listed."
+		if admin {
+			n.Message += " Use a key with the admin:monitor:read scope, created on an admin account, under " + adminFormPath + "."
+		} else {
+			n.Message += " Let your server admin know."
+		}
+	default:
+		n.Code = "silo_unavailable"
+		n.Message = "Couldn't reach Silo to list your account's profiles, so only profiles that already set up Pushover are listed. Reload the page to try again."
+	}
+	return n
 }
 
 func (p *Plugin) serveAPI(ctx context.Context, req *pluginv1.HandleHTTPRequest) *pluginv1.HandleHTTPResponse {
@@ -206,6 +301,10 @@ func (p *Plugin) handleState(ctx context.Context, req *pluginv1.HandleHTTPReques
 		profiles = append(profiles, summary)
 	}
 	state["profiles"] = profiles
+	state["household"] = v.household
+	if v.notice != nil {
+		state["notice"] = v.notice
+	}
 	return jsonResponse(http.StatusOK, state)
 }
 
@@ -438,6 +537,8 @@ func (p *Plugin) handleTest(ctx context.Context, v *viewer, prof siloProfile, bo
 type validateInput struct {
 	UserKey  string `json:"user_key"`
 	AppToken string `json:"app_token"`
+	// ClearAppToken checks against the shared token, as saving would.
+	ClearAppToken bool `json:"clear_app_token"`
 }
 
 // handleValidate checks the key pair and returns the account's devices and
@@ -454,7 +555,7 @@ func (p *Plugin) handleValidate(ctx context.Context, prof siloProfile, body []by
 		if user == "" {
 			user = existing.UserKey
 		}
-		if token == "" {
+		if token == "" && !in.ClearAppToken {
 			token = existing.AppToken
 		}
 	}
