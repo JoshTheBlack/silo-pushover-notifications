@@ -47,9 +47,9 @@
     .tab .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); margin-left: 6px; vertical-align: middle; }
     .field { margin-bottom: 16px; }
     .field:last-child { margin-bottom: 0; }
-    label.lbl { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+    .lbl { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
     .help { color: var(--muted); font-size: 13px; margin-top: 6px; }
-    input[type="text"], input[type="password"], select, textarea {
+    input[type="text"], input[type="password"], input[type="number"], select, textarea {
       width: 100%; background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
       border-radius: 10px; padding: 9px 12px; font: inherit;
     }
@@ -105,6 +105,19 @@
     .notice ul { margin: 6px 0 0; padding-left: 20px; }
     .notice .actions { margin-top: 10px; }
     .card .notice { margin: 16px 0 0; }
+    .narrow { max-width: 160px; }
+    fieldset.field { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
+    fieldset.field legend { padding: 0; }
+    .pick { border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); padding: 6px 12px; max-height: 200px; overflow: auto; }
+    .pick.inline { max-height: none; display: flex; flex-wrap: wrap; gap: 0 20px; }
+    .pick label { display: flex; gap: 8px; align-items: center; padding: 5px 0; font-size: 14px; cursor: pointer; }
+    .choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; margin-bottom: 8px; }
+    .choice:has(input:checked) { border-color: var(--accent); }
+    .choice input { margin-top: 4px; accent-color: var(--accent); flex: none; }
+    .choice .t { font-weight: 600; font-size: 14px; }
+    .choice .d { color: var(--muted); font-size: 13px; }
+    details.plain > summary { margin: 12px 0 0; }
+    details.plain[open] > summary { margin-bottom: 12px; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -157,7 +170,11 @@
     try { res = await fetch(path, opts); } catch { throw new Error("Couldn't reach Silo. Check your connection and try again."); }
     const data = await res.json().catch(() => ({}));
     if (res.status === 401) { sessionExpired(); throw new Error(data.message || "Session expired."); }
-    if (!res.ok) throw new Error(data.message || `Request failed (${res.status}).`);
+    if (!res.ok) {
+      const err = new Error(data.message || `Request failed (${res.status}).`);
+      err.code = data.code || "";
+      throw err;
+    }
     return data;
   }
 
@@ -168,7 +185,7 @@
   function sessionExpired() {
     expired = true;
     notice("warn", "This page's sign-in has expired.", " For security it only lasts a few minutes. Open Pushover from the Silo sidebar again to keep going. Unsaved changes on this page will be lost.");
-    $$("#app input, #app select, #app textarea, #app button, #bar button, #admin input, #admin button").forEach((e) => (e.disabled = true));
+    $$("#app input, #app select, #app textarea, #app button, #bar button, #admin input, #admin select, #admin textarea, #admin button").forEach((e) => (e.disabled = true));
   }
 
   function barMessage(text, kind) {
@@ -217,6 +234,7 @@
       return;
     }
     if (state.notice) notice(state.notice.level === "warn" ? "warn" : "info", state.notice.title, " " + state.notice.message);
+    sounds = state.sounds;
     renderAdmin();
     const active = state.profiles.find((p) => p.active) || state.profiles[0];
     profileId = active.id;
@@ -253,8 +271,8 @@
       `<option value="${esc(s.value)}"${s.value === selected ? " selected" : ""}>${esc(s.label)}</option>`).join("");
   }
 
-  function priorityOptions(selected, inherit) {
-    const first = inherit ? `<option value=""${selected == null ? " selected" : ""}>Same as default</option>` : "";
+  function priorityOptions(selected, inherit, inheritLabel = "Same as default") {
+    const first = inherit ? `<option value=""${selected == null ? " selected" : ""}>${esc(inheritLabel)}</option>` : "";
     return first + PRIORITIES.map((p) => `<option value="${p.value}"${p.value === selected ? " selected" : ""}>${esc(p.label)}</option>`).join("");
   }
 
@@ -354,7 +372,7 @@
   }
 
   function updatePreview(t) {
-    const box = $(`.type[data-type="${CSS.escape(t.key)}"]`);
+    const box = $(`#app .type[data-type="${CSS.escape(t.key)}"]`);
     if (!box) return;
     const ts = draft.types[t.key];
     const vars = sampleVars(t);
@@ -387,7 +405,7 @@
     });
     on("#checkBtn", "click", checkKey);
 
-    $$(".type").forEach((box) => {
+    $$("#app .type").forEach((box) => {
       const t = state.types.find((x) => x.key === box.dataset.type);
       const ts = draft.types[t.key];
       $$("[data-k]", box).forEach((input) => {
@@ -441,7 +459,7 @@
       $("#device").innerHTML = deviceOptions();
       $("#sound").innerHTML = soundOptions(draft.sound, "Pushover app default");
       state.types.forEach((t) => {
-        const sel = $(`.type[data-type="${CSS.escape(t.key)}"] [data-k=sound]`);
+        const sel = $(`#app .type[data-type="${CSS.escape(t.key)}"] [data-k=sound]`);
         if (sel) sel.innerHTML = soundOptions(draft.types[t.key].sound || "", "Same as default");
       });
       msg.className = "help status-ok";
@@ -480,6 +498,7 @@
       dirty = false;
       renderAll();
       if (res.warning) barMessage(res.warning, "err"); else barMessage("Saved", "ok");
+      refreshAdminReady();
     } catch (e) {
       if (!expired) barMessage(e.message, "err");
     } finally {
@@ -495,41 +514,445 @@
       if (summary) { summary.configured = false; summary.enabled = false; }
       await loadProfile();
       barMessage("Removed", "ok");
+      refreshAdminReady();
     } catch (e) {
       if (!expired) barMessage(e.message, "err");
     }
   });
 
-  // Admin section: only acting admins get admin_keys in the state.
+  // Admin section. Only acting admins get state.admin. It has two states:
+  // without a working read-only Silo key only the key setup shows; with one,
+  // the alert settings show and key setup is tucked below.
+  let adminData = null, adminDraft = null, adminUsers = [], adminUsersError = "";
+  let adminState = "loading", adminProblem = "", adminDirty = false, adminField = null;
+
+  const NOISE_HELP = {
+    binge: {
+      title: "Collapse binges (default)",
+      text: "You get one alert when someone starts a show or movie. After that, everything else about that person and that title is held back until they've been idle for the time below: later episodes, pauses, resumes and stops. That includes the stop alert for a stream you were told about, so you'll rarely see one. If they start something different, or come back after the idle time, you hear about it again.",
+      window: "Idle time before you hear about them again (minutes)",
+      windowHelp: "How long someone must have stopped watching a title before their next start is sent.",
+    },
+    cooldown: {
+      title: "Per-user cooldown",
+      text: "Each kind of alert (started, paused or resumed, stopped) is sent at most once per person in each window, whatever they're watching. A start and a stop can both come through, but a second start from the same person inside the window is skipped.",
+      window: "Cooldown (minutes)",
+      windowHelp: "The shortest time between two alerts of the same kind about the same person.",
+    },
+    every: {
+      title: "Every event",
+      text: "Every start, pause, resume and stop is sent. This can get noisy on a busy server.",
+    },
+  };
+
+  const KEY_PROBLEMS = {
+    monitor_key_missing: "Admin alerts need the read-only Silo key. The plugin uses it to check that each person who gets alerts is still an admin. Set it up below to turn them on.",
+    monitor_key_rejected: "Silo rejected the saved read-only key, so admin alerts are paused. It may have been revoked. Set up a new one below.",
+    monitor_key_scope: "The saved read-only key isn't allowed to look up accounts, so admin alerts are paused. Set up a new one below.",
+  };
+  const isKeyProblem = (e) => e && typeof e.code === "string" && e.code.startsWith("monitor_key_");
+
   function renderAdmin() {
     const box = $("#admin");
+    if (!state || !state.admin || !state.admin_keys) { box.innerHTML = ""; return; }
+    box.innerHTML = `<div id="adminAlerts"></div><div id="adminKeys"></div>`;
+    renderKeys();
+    loadAdmin();
+  }
+
+  // Switches the admin section to key setup only.
+  function showKeyOnly(code) {
+    adminState = "key";
+    adminProblem = code || "monitor_key_missing";
+    adminData = null; adminDraft = null; adminDirty = false;
+    $("#adminAlerts").innerHTML = "";
+    renderKeys();
+  }
+
+  async function loadAdmin() {
+    const box = $("#adminAlerts");
+    if (!box) return;
+    if (!state.admin_keys.monitor_key_set) { showKeyOnly("monitor_key_missing"); return; }
+    adminState = "loading";
+    box.innerHTML = `<div class="skeleton"></div>`;
+    renderKeys();
+    const usersReq = api("api/admin/users");
+    usersReq.catch(() => {});
+    try {
+      adminData = await api("api/admin/alerts");
+    } catch (e) {
+      if (expired) return;
+      if (isKeyProblem(e)) { showKeyOnly(e.code); return; }
+      adminState = "error";
+      box.innerHTML = `<section class="card"><h2>Admin alerts<span class="badge">Admin</span></h2>
+        <div class="notice error"><strong>Couldn't load your admin alert settings.</strong> ${esc(e.message)}
+          <div class="actions"><button class="btn" type="button" id="adminRetry">Try again</button></div></div></section>`;
+      $("#adminRetry").addEventListener("click", loadAdmin);
+      renderKeys();
+      return;
+    }
+    adminUsers = []; adminUsersError = "";
+    try {
+      adminUsers = (await usersReq).users || [];
+    } catch (e) {
+      if (expired) return;
+      if (isKeyProblem(e)) { showKeyOnly(e.code); return; }
+      adminUsersError = e.message;
+    }
+    adminState = "ready"; adminProblem = ""; adminDirty = false;
+    adminDraft = JSON.parse(JSON.stringify(adminData.settings));
+    renderAdminAlerts();
+    renderKeys();
+    adminMessage(adminData.configured ? "" : "Not set up yet. Every alert is off until you switch it on.");
+  }
+
+  function adminMessage(text, kind) {
+    const m = $("#adminMsg");
+    if (!m) return;
+    m.textContent = text || "";
+    m.className = "help" + (kind ? " status-" + kind : "");
+  }
+
+  function markAdminDirty() {
+    adminDirty = true;
+    adminMessage("Unsaved changes");
+  }
+
+  function activeProfileName() {
+    const p = state.profiles.find((x) => x.active) || state.profiles[0];
+    return p ? p.name : "your profile";
+  }
+
+  function readyNotice() {
+    if (!adminData || adminData.pushover_ready) return "";
+    return `<div class="notice warn"><strong>Set up Pushover for ${esc(activeProfileName())} first.</strong> ${esc(adminData.pushover_message || "Admin alerts are sent with your profile's Pushover settings. Add your Pushover user key in your profile's section of this page first.")}</div>`;
+  }
+
+  // After a profile save, the admin's Pushover status may have changed.
+  async function refreshAdminReady() {
+    if (!adminData || adminState !== "ready") return;
+    try {
+      const fresh = await api("api/admin/alerts");
+      adminData.pushover_ready = fresh.pushover_ready;
+      adminData.pushover_message = fresh.pushover_message;
+      const slot = $("#adminReady");
+      if (slot) slot.innerHTML = readyNotice();
+    } catch (e) {
+      if (isKeyProblem(e)) showKeyOnly(e.code);
+    }
+  }
+
+  function renderAdminAlerts() {
+    const d = adminData;
+    const dr = adminDraft;
+    $("#adminAlerts").innerHTML = `
+      <section class="card" aria-labelledby="alertsTitle">
+        <h2 id="alertsTitle">Admin alerts<span class="badge">Admin</span></h2>
+        <p class="sub">Get a Pushover alert when someone plays something on your server. Every alert is off until you switch it on. Alerts are sent only to you, with the Pushover settings of <strong>${esc(activeProfileName())}</strong> above; other admins set up their own. Only server admins see this section.</p>
+        <div id="adminReady">${readyNotice()}</div>
+        <div class="alerts">${d.alert_types.map(renderAlert).join("")}</div>
+
+        <h3>Filters</h3>
+        <p class="help" style="margin-top:0">Filters apply to all the playback alerts above.</p>
+        <div class="checks" style="margin:12px 0 16px">
+          <label class="switch"><input type="checkbox" id="fRemote"${dr.filters.only_remote ? " checked" : ""}>
+            <span><span class="t">Only remote streams</span><br><span class="d">Skips streams Silo sees as local. A stream whose location Silo can't tell counts as local.</span></span></label>
+          <label class="switch"><input type="checkbox" id="fTranscode"${dr.filters.only_transcodes ? " checked" : ""}>
+            <span><span class="t">Only transcodes</span><br><span class="d">Skips direct play and direct stream.</span></span></label>
+        </div>
+        <fieldset class="field">
+          <legend class="lbl">Media types</legend>
+          <div class="pick inline">${mediaTypeChecks()}</div>
+          <div class="help">Leave all unticked to hear about every kind of media.</div>
+        </fieldset>
+        <div class="field">
+          <label class="lbl" id="ignoreLbl">Users to ignore</label>
+          <div id="userPick"></div>
+          <div class="help">Nothing is sent about the people you tick, whatever they play.</div>
+        </div>
+
+        <h3>Noise</h3>
+        <fieldset class="field" aria-label="Noise mode">
+          ${d.noise_modes.map((m) => noiseChoice(m, dr.noise.mode)).join("")}
+        </fieldset>
+        <div class="field" id="noiseWindowField">
+          <label class="lbl" for="noiseWindow" id="noiseWindowLbl"></label>
+          <input type="number" class="narrow" id="noiseWindow" min="1" max="1440" step="1" inputmode="numeric" value="${esc(dr.noise.window_minutes || "")}">
+          <div class="help" id="noiseWindowHelp"></div>
+        </div>
+        <p class="help">Playback failed alerts ignore the noise mode and always come through when they're switched on. Your filters still apply to them.</p>
+
+        <div class="actions">
+          <button class="btn primary" type="button" id="adminSave">Save admin alerts</button>
+          <button class="btn danger" type="button" id="adminRemove"${d.configured ? "" : " hidden"}>Remove my admin alerts</button>
+          <span class="help" id="adminMsg" role="status" aria-live="polite"></span>
+        </div>
+      </section>`;
+    renderUserPick();
+    syncNoiseWindow();
+    bindAdminAlerts();
+    d.alert_types.forEach(updateAlertPreview);
+  }
+
+  function renderAlert(t) {
+    const a = adminDraft.alerts[t.key];
+    const id = "al_" + t.key.replace(/\W/g, "_");
+    return `
+      <div class="type" data-alert="${esc(t.key)}">
+        <label class="switch"><input type="checkbox" data-k="enabled"${a.enabled ? " checked" : ""}>
+          <span><span class="t">${esc(t.label)}</span><br><span class="d">${esc(t.description)}${t.noise_controlled ? "" : " Always sent when it's on, whatever the noise mode."}</span></span></label>
+        <details>
+          <summary>Customize wording</summary>
+          <div class="editor">
+            <div class="field"><label class="lbl" for="${id}_title">Title</label>
+              <input type="text" id="${id}_title" data-k="title" value="${esc(a.title)}"></div>
+            <div class="field"><label class="lbl" for="${id}_message">Message</label>
+              <textarea id="${id}_message" data-k="message" rows="3">${esc(a.message)}</textarea>
+              <div class="chips" aria-label="Insert a placeholder">${t.placeholders.map((p) => `<button class="chip" type="button" data-insert="{${esc(p)}}">{${esc(p)}}</button>`).join("")}</div>
+            </div>
+            <div class="grid">
+              <div class="field"><label class="lbl" for="${id}_priority">Priority</label>
+                <select id="${id}_priority" data-k="priority">${priorityOptions(a.priority ?? null, true, "Same as my profile")}</select></div>
+              <div class="field"><label class="lbl" for="${id}_sound">Sound</label>
+                <select id="${id}_sound" data-k="sound">${soundOptions(a.sound || "", "Same as my profile")}</select></div>
+            </div>
+            <div class="preview" aria-live="polite"><div class="pl">Preview with sample data</div><div class="pt"></div><div class="pm"></div></div>
+            <div class="actions">
+              <button class="btn" type="button" data-test>Send test</button>
+              <button class="link" type="button" data-reset>Reset wording</button>
+              <span class="help" data-test-msg role="status" aria-live="polite"></span>
+            </div>
+          </div>
+        </details>
+      </div>`;
+  }
+
+  function updateAlertPreview(t) {
+    const box = $(`#adminAlerts .type[data-alert="${CSS.escape(t.key)}"]`);
+    if (!box) return;
+    const a = adminDraft.alerts[t.key];
+    const vars = { ...t.sample, type: t.key, type_label: t.label };
+    $(".pt", box).textContent = render(a.title, vars) || "(no title)";
+    $(".pm", box).textContent = render(a.message, vars) || "(no message)";
+  }
+
+  function mediaTypeChecks() {
+    const known = adminData.media_types.map((m) => m);
+    // Keep types saved earlier that this list doesn't offer.
+    adminDraft.filters.media_types.forEach((v) => { if (!known.some((m) => m.value === v)) known.push({ value: v, label: v }); });
+    return known.map((m) =>
+      `<label><input type="checkbox" data-media="${esc(m.value)}"${adminDraft.filters.media_types.includes(m.value) ? " checked" : ""}> ${esc(m.label)}</label>`).join("");
+  }
+
+  function renderUserPick() {
+    const slot = $("#userPick");
+    if (!slot) return;
+    const ignored = adminDraft.filters.ignore_users;
+    const rows = adminUsers.map((u) => ({ id: u.id, name: u.username + (u.enabled ? "" : " (disabled)") }));
+    ignored.forEach((id) => { if (!rows.some((r) => r.id === id)) rows.push({ id, name: `Unknown account (${id})` }); });
+    let html = "";
+    if (adminUsersError) {
+      html += `<div class="help status-err">Couldn't load the list of accounts: ${esc(adminUsersError)} <button class="link" type="button" id="usersRetry">Try again</button></div>`;
+    }
+    html += rows.length
+      ? `<div class="pick" role="group" aria-labelledby="ignoreLbl">${rows.map((r) =>
+        `<label><input type="checkbox" data-user="${esc(r.id)}"${ignored.includes(r.id) ? " checked" : ""}> ${esc(r.name)}</label>`).join("")}</div>`
+      : (adminUsersError ? "" : `<div class="help">No accounts to list.</div>`);
+    slot.innerHTML = html;
+    $$("[data-user]", slot).forEach((c) => c.addEventListener("change", () => {
+      const list = adminDraft.filters.ignore_users.filter((id) => id !== c.dataset.user);
+      if (c.checked) list.push(c.dataset.user);
+      adminDraft.filters.ignore_users = list;
+      markAdminDirty();
+    }));
+    const retry = $("#usersRetry", slot);
+    if (retry) retry.addEventListener("click", async () => {
+      retry.disabled = true;
+      try {
+        adminUsers = (await api("api/admin/users")).users || [];
+        adminUsersError = "";
+      } catch (e) {
+        if (expired) return;
+        if (isKeyProblem(e)) { showKeyOnly(e.code); return; }
+        adminUsersError = e.message;
+      }
+      renderUserPick();
+    });
+  }
+
+  function noiseChoice(m, current) {
+    const h = NOISE_HELP[m.value] || { title: m.label, text: "" };
+    return `<label class="choice"><input type="radio" name="noiseMode" value="${esc(m.value)}"${m.value === current ? " checked" : ""}>
+      <span><span class="t">${esc(h.title)}</span><br><span class="d">${esc(h.text)}</span></span></label>`;
+  }
+
+  // Shows the window field for the modes that use it.
+  function syncNoiseWindow() {
+    const h = NOISE_HELP[adminDraft.noise.mode] || {};
+    $("#noiseWindowField").hidden = !h.window;
+    $("#noiseWindowLbl").textContent = h.window || "";
+    $("#noiseWindowHelp").textContent = h.windowHelp || "";
+  }
+
+  function bindAdminAlerts() {
+    $$("#adminAlerts .type").forEach((box) => {
+      const t = adminData.alert_types.find((x) => x.key === box.dataset.alert);
+      const a = adminDraft.alerts[t.key];
+      $$("[data-k]", box).forEach((input) => {
+        const k = input.dataset.k;
+        const ev = input.tagName === "SELECT" || input.type === "checkbox" ? "change" : "input";
+        input.addEventListener(ev, () => {
+          if (k === "enabled") a.enabled = input.checked;
+          else if (k === "priority") a.priority = input.value === "" ? null : Number(input.value);
+          else a[k] = input.value;
+          markAdminDirty();
+          updateAlertPreview(t);
+        });
+        if (k === "title" || k === "message") input.addEventListener("focus", () => (adminField = input));
+      });
+      $$("[data-insert]", box).forEach((chip) => chip.addEventListener("click", () => {
+        const target = adminField && box.contains(adminField) ? adminField : $("[data-k=message]", box);
+        const s = target.selectionStart ?? target.value.length, e = target.selectionEnd ?? s;
+        target.value = target.value.slice(0, s) + chip.dataset.insert + target.value.slice(e);
+        target.focus();
+        target.setSelectionRange(s + chip.dataset.insert.length, s + chip.dataset.insert.length);
+        target.dispatchEvent(new Event("input"));
+      }));
+      $("[data-reset]", box).addEventListener("click", () => {
+        a.title = t.default_title; a.message = t.default_message;
+        $("[data-k=title]", box).value = a.title;
+        $("[data-k=message]", box).value = a.message;
+        markAdminDirty();
+        updateAlertPreview(t);
+      });
+      $("[data-test]", box).addEventListener("click", (e) => sendAdminTest(t, e.target, $("[data-test-msg]", box)));
+    });
+
+    const f = adminDraft.filters;
+    $("#fRemote").addEventListener("change", (e) => { f.only_remote = e.target.checked; markAdminDirty(); });
+    $("#fTranscode").addEventListener("change", (e) => { f.only_transcodes = e.target.checked; markAdminDirty(); });
+    $$("[data-media]").forEach((c) => c.addEventListener("change", () => {
+      f.media_types = f.media_types.filter((v) => v !== c.dataset.media);
+      if (c.checked) f.media_types.push(c.dataset.media);
+      markAdminDirty();
+    }));
+    $$("input[name=noiseMode]").forEach((r) => r.addEventListener("change", () => {
+      adminDraft.noise.mode = r.value;
+      syncNoiseWindow();
+      markAdminDirty();
+    }));
+    $("#noiseWindow").addEventListener("input", (e) => {
+      adminDraft.noise.window_minutes = e.target.value === "" ? 0 : Math.round(Number(e.target.value));
+      markAdminDirty();
+    });
+    $("#adminSave").addEventListener("click", saveAdmin);
+    $("#adminRemove").addEventListener("click", removeAdmin);
+  }
+
+  function adminPayload() {
+    return { alerts: adminDraft.alerts, filters: adminDraft.filters, noise: adminDraft.noise };
+  }
+
+  // Returns a message when the noise window can't be saved.
+  function noiseWindowProblem() {
+    const n = adminDraft.noise;
+    if (!(NOISE_HELP[n.mode] || {}).window) return "";
+    if (!Number.isFinite(n.window_minutes) || n.window_minutes < 1 || n.window_minutes > 1440) return "Enter a time between 1 and 1440 minutes.";
+    return "";
+  }
+
+  async function sendAdminTest(t, btn, out) {
+    btn.disabled = true;
+    out.className = "help"; out.textContent = "Sending…";
+    try {
+      await api("api/admin/alerts/test", "POST", { settings: adminPayload(), alert: t.key });
+      out.className = "help status-ok"; out.textContent = "Sent. Check your device.";
+    } catch (e) {
+      if (expired) return;
+      if (isKeyProblem(e)) { showKeyOnly(e.code); return; }
+      out.className = "help status-err"; out.textContent = e.message;
+    } finally {
+      btn.disabled = expired;
+    }
+  }
+
+  async function saveAdmin() {
+    const btn = $("#adminSave");
+    const problem = noiseWindowProblem();
+    if (problem) { adminMessage(problem, "err"); $("#noiseWindow").focus(); return; }
+    btn.disabled = true;
+    adminMessage("Saving…");
+    try {
+      const res = await api("api/admin/alerts", "PUT", adminPayload());
+      adminData.configured = true;
+      adminData.settings = res.settings;
+      adminDraft = JSON.parse(JSON.stringify(res.settings));
+      adminDirty = false;
+      renderAdminAlerts();
+      if (res.warning) adminMessage(res.warning, "err"); else adminMessage("Saved", "ok");
+    } catch (e) {
+      if (expired) return;
+      if (isKeyProblem(e)) { showKeyOnly(e.code); return; }
+      adminMessage(e.message, "err");
+    } finally {
+      const b = $("#adminSave");
+      if (b) b.disabled = expired;
+    }
+  }
+
+  async function removeAdmin() {
+    if (!confirm("Turn off your admin alerts and forget these settings?")) return;
+    try {
+      await api("api/admin/alerts", "DELETE");
+      await loadAdmin();
+      adminMessage("Removed", "ok");
+    } catch (e) {
+      if (expired) return;
+      if (isKeyProblem(e)) { showKeyOnly(e.code); return; }
+      adminMessage(e.message, "err");
+    }
+  }
+
+  function renderKeys() {
+    const box = $("#adminKeys");
     const k = state && state.admin_keys;
-    if (!k) { box.innerHTML = ""; return; }
-    const status = (set, label) => `<li>${esc(label)}: ${set ? '<span class="status-ok">saved</span>' : '<span class="muted">not set</span>'}</li>`;
+    if (!box || !k) return;
+    // Re-rendering mustn't lose the last result or the form's state.
+    const keepResult = $("#setupResult") ? $("#setupResult").innerHTML : "";
+    const keepControl = $("#setupControl") ? $("#setupControl").checked : false;
+    const keepOpen = $("#keyDetails") ? $("#keyDetails").open : false;
+    const needsKey = adminState === "key";
+    const status = (set, label, bad) => `<li>${esc(label)}: ${set ? (bad ? `<span class="status-err">${esc(bad)}</span>` : '<span class="status-ok">saved</span>') : '<span class="muted">not set</span>'}</li>`;
+    const badMonitor = needsKey && adminProblem === "monitor_key_rejected" ? "saved, but Silo rejected it"
+      : needsKey && adminProblem === "monitor_key_scope" ? "saved, but it can't look up accounts" : "";
+    const action = k.monitor_key_set ? "Replace the read-only key" : "Set up the read-only key";
     box.innerHTML = `
       <section class="card" aria-labelledby="adminTitle">
         <h2 id="adminTitle">Silo keys<span class="badge">Admin</span></h2>
-        <p class="sub">The plugin reads from Silo with a key that can only read (scope admin:monitor:read). With it, each account's primary profile can set up Pushover for every profile on the account. Only server admins see this section.</p>
-        <ul class="keylist">${status(k.monitor_key_set, "Read-only key")}${status(k.control_key_set, "Stream-control key")}</ul>
+        <p class="sub">The plugin reads from Silo with a key that can only read (scope admin:monitor:read). With it, each account's primary profile can set up Pushover for every profile on the account, and admin alerts can check that each recipient is still an admin. Only server admins see this section.</p>
+        ${needsKey ? `<div class="notice warn"><strong>Admin alerts are off for now.</strong> ${esc(KEY_PROBLEMS[adminProblem] || KEY_PROBLEMS.monitor_key_missing)}</div>` : ""}
+        <ul class="keylist">${status(k.monitor_key_set, "Read-only key", badMonitor)}${status(k.control_key_set, "Stream-control key")}</ul>
         ${k.legacy_key_stored ? `
         <div class="notice warn"><strong>The full-access key from version 0.2.0 is still stored.</strong>
           The plugin no longer uses it. It can use it one last time to create the read-only key, and then revokes it in Silo.
           <div class="actions"><button class="btn primary" type="button" id="legacyBtn">Replace the old full-access key</button></div>
         </div>` : ""}
-        <h3>${k.monitor_key_set ? "Replace the read-only key" : "Set up the read-only key"}</h3>
-        <div class="field">
-          <label class="lbl" for="setupKey">Full-access Silo API key</label>
-          <input type="password" id="setupKey" autocomplete="off" spellcheck="false" placeholder="sa_…">
-          <div class="help">Create one under Admin &gt; API Keys and paste it here. The plugin uses it once to create a key on your account with only the admin:monitor:read scope, and doesn't keep it.</div>
-        </div>
-        <div class="checks">
-          <label class="switch"><input type="checkbox" id="setupRevoke" checked>
-            <span><span class="t">Delete this key from Silo</span><br><span class="d">Revokes the key you pasted once the new key is saved and working.</span></span></label>
-          <label class="switch"><input type="checkbox" id="setupControl">
-            <span><span class="t">Also allow stopping streams</span><br><span class="d">Also creates a separate key with the admin:sessions:control scope, for stopping streams from an alert.${k.legacy_key_stored ? " Applies to the old-key button too." : ""}</span></span></label>
-        </div>
-        <div class="actions"><button class="btn primary" type="button" id="setupBtn">${k.monitor_key_set ? "Replace the read-only key" : "Set up the read-only key"}</button></div>
-        <div id="setupResult" role="status" aria-live="polite"></div>
+        <details class="plain" id="keyDetails"${needsKey || keepOpen ? " open" : ""}>
+          <summary>${action}</summary>
+          <div class="field">
+            <label class="lbl" for="setupKey">Full-access Silo API key</label>
+            <input type="password" id="setupKey" autocomplete="off" spellcheck="false" placeholder="sa_…">
+            <div class="help">Create one under Admin &gt; API Keys and paste it here. The plugin uses it once to create a key on your account with only the admin:monitor:read scope, and doesn't keep it.</div>
+          </div>
+          <div class="checks">
+            <label class="switch"><input type="checkbox" id="setupRevoke" checked>
+              <span><span class="t">Delete this key from Silo</span><br><span class="d">Revokes the key you pasted once the new key is saved and working.</span></span></label>
+            <label class="switch"><input type="checkbox" id="setupControl"${keepControl ? " checked" : ""}>
+              <span><span class="t">Also allow stopping streams</span><br><span class="d">Also creates a separate key with the admin:sessions:control scope, for stopping streams from an alert.${k.legacy_key_stored ? " Applies to the old-key button too." : ""}</span></span></label>
+          </div>
+          <div class="actions"><button class="btn primary" type="button" id="setupBtn">${action}</button></div>
+        </details>
+        <div id="setupResult" role="status" aria-live="polite">${keepResult}</div>
       </section>`;
     $("#setupBtn").addEventListener("click", () => runSetup("paste"));
     const legacy = $("#legacyBtn");
@@ -550,7 +973,7 @@
     } else if (!confirm("Use the old full-access key to create the read-only key, then revoke the old key in Silo?")) {
       return;
     }
-    $$("#admin input, #admin button").forEach((e) => (e.disabled = true));
+    $$("#adminKeys input, #adminKeys button").forEach((e) => (e.disabled = true));
     $("#setupResult").innerHTML = `<p class="help">Setting up the key. This takes a few seconds…</p>`;
     let res = null, error = null;
     try { res = await api("api/admin/key-setup", "POST", body); } catch (e) { error = e; }
@@ -562,9 +985,7 @@
       try { const fresh = await api("api/state"); if (fresh.admin_keys) state.admin_keys = fresh.admin_keys; } catch { /* keep the old status */ }
       if (expired) return;
     }
-    const control = body.control;
-    renderAdmin();
-    $("#setupControl").checked = control;
+    renderKeys();
     if (res) {
       const details = [...(res.details || [])];
       if (res.saved) details.push("Reload this page to manage every profile on your account from here.");
@@ -573,9 +994,11 @@
       if (source === "paste") $("#setupKey").value = pasted;
       showSetupResult("error", "The key setup didn't finish.", [error.message]);
     }
+    // A new key may make the alert settings available (or fix a broken key).
+    if (state.admin_keys.monitor_key_set && (res ? res.saved : true) && adminState !== "ready") loadAdmin();
   }
 
-  window.addEventListener("beforeunload", (e) => { if (dirty && !expired) e.preventDefault(); });
+  window.addEventListener("beforeunload", (e) => { if ((dirty || adminDirty) && !expired) e.preventDefault(); });
 
   init();
 })();

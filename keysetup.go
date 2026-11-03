@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"regexp"
 	"slices"
@@ -255,6 +256,10 @@ func (s *keySetup) createKeys(ctx context.Context, matches []siloAPIKey) (*keySe
 			left = s.cleanupText(s.discard(context.WithoutCancel(ctx), monitor))
 		}
 		s.logFailure("create read-only key", err)
+		if isTimeout(err) {
+			// Silo may have made the key before the answer was lost.
+			return nil, apiErr(http.StatusBadGateway, "create_failed", s.scrub("Silo took too long to answer, so the plugin can't tell whether it created the read-only key. An unused “"+monitorKeyLabel+"” key may be left under "+apiKeysPage+"; delete it there if you see one. No key was saved. "+left))
+		}
 		return nil, apiErr(http.StatusBadGateway, "create_failed", s.scrub("Silo couldn't create the read-only key: "+describeSiloError(err)+". Nothing was changed. "+left))
 	}
 
@@ -276,6 +281,9 @@ func (s *keySetup) createKeys(ctx context.Context, matches []siloAPIKey) (*keySe
 				left = " " + s.cleanupText(s.discard(ctx, control))
 			}
 			s.logFailure("create stream-control key", err)
+			if isTimeout(err) {
+				left += " An unused “" + controlKeyLabel + "” key may be left under " + apiKeysPage + "; delete it there if you see one."
+			}
 			s.note(true, "Silo couldn't create the stream-control key: "+describeSiloError(err)+"."+left)
 			control = nil
 		}
@@ -477,6 +485,13 @@ func (s *keySetup) scrub(text string) string {
 		}
 	}
 	return text
+}
+
+// isTimeout reports whether a Silo call ran out of time, so its outcome is
+// unknown.
+func isTimeout(err error) bool {
+	var nerr net.Error
+	return errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &nerr) && nerr.Timeout())
 }
 
 // describeSiloError explains a failed Silo call in a few words.

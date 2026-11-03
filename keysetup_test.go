@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
 	"github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/runtimehost"
@@ -60,6 +61,7 @@ type fakeKeySilo struct {
 	failCreate    map[string]int // first scope -> HTTP status
 	failDelete    int
 	rejectCreated bool // keys made through POST get 401 when used
+	createDelay   time.Duration
 }
 
 var profilesPath = regexp.MustCompile(`^/api/v2/admin/users/[0-9]+/profiles$`)
@@ -224,6 +226,14 @@ func (f *fakeKeySilo) handle(w http.ResponseWriter, r *http.Request) {
 		f.nextID++
 		f.keys = append(f.keys, k)
 		f.created = append(f.created, k.secret)
+		if f.createDelay > 0 {
+			// The key exists, but the answer comes too late.
+			select {
+			case <-time.After(f.createDelay):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": strconv.Itoa(k.id), "user_id": strconv.Itoa(k.userID), "label": k.label, "key": k.secret, "scopes": k.scopes, "rate_tier": "standard"})
 
@@ -483,6 +493,29 @@ func TestKeySetupCreateFailure(t *testing.T) {
 	}
 	if ks.silo.count("SAVE") != 0 || ks.silo.count("DELETE") != 0 || ks.silo.key(testFullKey) == nil {
 		t.Fatalf("a failed create changed something: %v", ks.silo.events())
+	}
+	ks.assertNoLeaks(t, body)
+}
+
+// Silo may create a key and still answer too slowly. The message must not
+// claim nothing was changed.
+func TestKeySetupCreateTimeout(t *testing.T) {
+	ks := newKeySetupHarness(t, nil)
+	ks.silo.createDelay = 5 * time.Second
+	ks.plugin.keys.timeout = 150 * time.Millisecond
+	status, body := ks.setup(t, asPrimary, map[string]any{"key": testFullKey, "revoke": true})
+	if status != http.StatusBadGateway || body["code"] != "create_failed" {
+		t.Fatalf("setup: %d %v", status, body)
+	}
+	msg := body["message"].(string)
+	if !strings.Contains(msg, "took too long") || !strings.Contains(msg, "“Pushover read-only” key may be left under Admin > API Keys") {
+		t.Fatalf("message = %q", msg)
+	}
+	if strings.Contains(msg, "Nothing was changed") {
+		t.Fatalf("message claims nothing changed: %q", msg)
+	}
+	if ks.silo.count("SAVE") != 0 || ks.silo.count("DELETE") != 0 || ks.silo.key(testFullKey) == nil {
+		t.Fatalf("a timed-out create changed something: %v", ks.silo.events())
 	}
 	ks.assertNoLeaks(t, body)
 }
