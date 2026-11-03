@@ -895,6 +895,43 @@ func TestStoreWriteKeepsOtherServersChanges(t *testing.T) {
 	}
 }
 
+func TestStoreGetReadsOnlyItsBucket(t *testing.T) {
+	state := &countingState{memoryState: memoryState{values: map[string][]byte{}}}
+	ctx := context.Background()
+	if err := newProfileStore(state).Put(ctx, &ProfileSettings{ProfileID: "p1", UserKey: "k1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	s := newProfileStore(state)
+	s.now = func() time.Time { return now }
+	state.reads.Store(0)
+	if got, found, err := s.Get(ctx, "p1"); err != nil || !found || got.UserKey != "k1" {
+		t.Fatalf("cold Get = %v, %v, %v", got, found, err)
+	}
+	if n := state.reads.Load(); n != 1 {
+		t.Fatalf("cold Get made %d state reads, want 1", n)
+	}
+	if _, _, err := s.Get(ctx, "p1"); err != nil || state.reads.Load() != 1 {
+		t.Fatalf("Get inside the TTL should use the cache (reads %d, err %v)", state.reads.Load(), err)
+	}
+	now = now.Add(settingsCacheTTL)
+	if _, _, err := s.Get(ctx, "p1"); err != nil || state.reads.Load() != 2 {
+		t.Fatalf("Get after the TTL should re-read one bucket (reads %d, err %v)", state.reads.Load(), err)
+	}
+}
+
+// countingState is a memoryState that counts reads.
+type countingState struct {
+	memoryState
+	reads atomic.Int32
+}
+
+func (c *countingState) Read(ctx context.Context, key string) ([]byte, bool, error) {
+	c.reads.Add(1)
+	return c.memoryState.Read(ctx, key)
+}
+
 // flakyState is a memoryState whose reads can be made to fail.
 type flakyState struct {
 	memoryState

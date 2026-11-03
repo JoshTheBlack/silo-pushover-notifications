@@ -107,7 +107,10 @@ type profileStore struct {
 	loadMu sync.Mutex
 
 	mu       sync.RWMutex
-	loadedAt time.Time // zero until the first successful load
+	loadedAt time.Time // zero until the first successful full load
+	// bucketAt is when each bucket was last read or written on its own, so
+	// Get can refresh one bucket instead of reloading all of them.
+	bucketAt map[string]time.Time
 	profiles map[string]*ProfileSettings
 }
 
@@ -117,7 +120,7 @@ const (
 )
 
 func newProfileStore(state stateBackend) *profileStore {
-	return &profileStore{state: state, ttl: settingsCacheTTL, now: time.Now, profiles: map[string]*ProfileSettings{}}
+	return &profileStore{state: state, ttl: settingsCacheTTL, now: time.Now, bucketAt: map[string]time.Time{}, profiles: map[string]*ProfileSettings{}}
 }
 
 func bucketKey(profileID string) string {
@@ -132,6 +135,19 @@ func (s *profileStore) fresh() (fresh, loaded bool) {
 	defer s.mu.RUnlock()
 	loaded = !s.loadedAt.IsZero()
 	return loaded && s.now().Sub(s.loadedAt) < s.ttl, loaded
+}
+
+// bucketFresh is fresh for one bucket: either the full cache or that bucket
+// on its own is younger than the TTL.
+func (s *profileStore) bucketFresh(key string) (fresh, loaded bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	at := s.bucketAt[key]
+	if s.loadedAt.After(at) {
+		at = s.loadedAt
+	}
+	loaded = !at.IsZero()
+	return loaded && s.now().Sub(at) < s.ttl, loaded
 }
 
 // ensureLoaded reloads the cache when it is missing or past its TTL. If a
@@ -171,6 +187,7 @@ func (s *profileStore) reloadLocked(ctx context.Context) error {
 	s.mu.Lock()
 	s.profiles = profiles
 	s.loadedAt = s.now()
+	s.bucketAt = map[string]time.Time{}
 	s.mu.Unlock()
 	return nil
 }
@@ -190,10 +207,15 @@ func (s *profileStore) readBucket(ctx context.Context, key string) (map[string]*
 	return bucket, nil
 }
 
-// Get returns a copy of a profile's settings.
+// Get returns a copy of a profile's settings. When the cache is missing or
+// stale it re-reads only the profile's own bucket, so a delivery costs one
+// state read instead of a full reload.
 func (s *profileStore) Get(ctx context.Context, profileID string) (*ProfileSettings, bool, error) {
-	if err := s.ensureLoaded(ctx); err != nil {
-		return nil, false, err
+	key := bucketKey(profileID)
+	if fresh, _ := s.bucketFresh(key); !fresh {
+		if err := s.refreshBucket(ctx, key); err != nil {
+			return nil, false, err
+		}
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -202,6 +224,40 @@ func (s *profileStore) Get(ctx context.Context, profileID string) (*ProfileSetti
 		return nil, false, nil
 	}
 	return settings.clone(), true, nil
+}
+
+// refreshBucket re-reads one bucket into the cache. If the read fails but the
+// cache was loaded before, the older copy keeps serving.
+func (s *profileStore) refreshBucket(ctx context.Context, key string) error {
+	s.loadMu.Lock()
+	defer s.loadMu.Unlock()
+	fresh, loaded := s.bucketFresh(key)
+	if fresh {
+		return nil
+	}
+	bucket, err := s.readBucket(ctx, key)
+	if err != nil {
+		if loaded {
+			return nil
+		}
+		return err
+	}
+	s.replaceBucket(key, bucket)
+	return nil
+}
+
+// replaceBucket swaps one bucket's profiles in memory for the given ones,
+// which were just read from or written to state.
+func (s *profileStore) replaceBucket(key string, bucket map[string]*ProfileSettings) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bucketAt[key] = s.now()
+	for id := range s.profiles {
+		if bucketKey(id) == key {
+			delete(s.profiles, id)
+		}
+	}
+	maps.Copy(s.profiles, bucket)
 }
 
 // ListByUser returns copies of the settings saved for one Silo account's
@@ -267,14 +323,7 @@ func (s *profileStore) mutate(ctx context.Context, profileID string, next *Profi
 
 	// Replace this bucket's profiles in memory with what was just written,
 	// which also picks up other servers' changes to the same bucket.
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for id := range s.profiles {
-		if bucketKey(id) == key {
-			delete(s.profiles, id)
-		}
-	}
-	maps.Copy(s.profiles, bucket)
+	s.replaceBucket(key, bucket)
 	return nil
 }
 
