@@ -1043,6 +1043,7 @@ PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
         <p class="sub">The plugin reads from Silo with a key that can only read (scope admin:monitor:read). With it, each account's primary profile can set up Pushover for every profile on the account, and admin alerts can check that each recipient is still an admin. Only server admins see this section.</p>
         ${needsKey ? `<div class="notice warn"><strong>Admin alerts are off for now.</strong> ${esc(KEY_PROBLEMS[adminProblem] || KEY_PROBLEMS.monitor_key_missing)}</div>` : ""}
         <ul class="keylist">${status(k.monitor_key_set, "Read-only key", badMonitor)}${status(k.control_key_set, "Stream-control key")}</ul>
+        ${k.monitor_key_set && !needsKey ? `<p class="help"><a href="admin/sessions">Live streams</a>: see who's streaming${k.control_key_set ? " and stop a stream, with or without a message" : ". To stop streams from there, also set up the stream-control key below"}.</p>` : ""}
         ${k.legacy_key_stored ? `
         <div class="notice warn"><strong>The full-access key from version 0.2.0 is still stored.</strong>
           The plugin no longer uses it. It can use it one last time to create the read-only key, and then revokes it in Silo.
@@ -1059,7 +1060,7 @@ PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
             <label class="switch"><input type="checkbox" id="setupRevoke" checked>
               <span><span class="t">Delete this key from Silo</span><br><span class="d">Revokes the key you pasted once the new key is saved and working.</span></span></label>
             <label class="switch"><input type="checkbox" id="setupControl"${keepControl ? " checked" : ""}>
-              <span><span class="t">Also allow stopping streams</span><br><span class="d">Also creates a separate key with the admin:sessions:control scope, for stopping streams from an alert.${k.legacy_key_stored ? " Applies to the old-key button too." : ""}</span></span></label>
+              <span><span class="t">Also allow stopping streams</span><br><span class="d">Also creates a separate key with the admin:sessions:control scope, for stopping streams from the Live streams page.${k.legacy_key_stored ? " Applies to the old-key button too." : ""}</span></span></label>
           </div>
           <div class="actions"><button class="btn primary" type="button" id="setupBtn">${action}</button></div>
         </details>

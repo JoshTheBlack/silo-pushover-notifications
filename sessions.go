@@ -87,6 +87,10 @@ type adminSession struct {
 	FileDuration          *float64 `json:"file_duration"` // seconds
 	IsPaused              bool     `json:"is_paused"`
 	StartedAt             string   `json:"started_at"`
+	// HasPlaybackControl is false for players Silo can't send commands to
+	// over a live connection (messages need one; a stop falls back to ending
+	// the session).
+	HasPlaybackControl *bool `json:"has_playback_control"`
 }
 
 // adminHistory is the part of Silo's AdminPlaybackHistoryEntry the alerts

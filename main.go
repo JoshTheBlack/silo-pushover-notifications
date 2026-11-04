@@ -48,6 +48,8 @@ type Plugin struct {
 
 	// keys creates and revokes Silo API keys during a key setup.
 	keys *keyAdmin
+	// commands stops streams with the stream-control key.
+	commands *sessionCommander
 	// keySetupMu lets one key setup run at a time in this process.
 	keySetupMu sync.Mutex
 	// setGlobalConfigFn rewrites the plugin's own config row (the host's
@@ -95,6 +97,7 @@ func newPlugin(logger *slog.Logger, state stateBackend) *Plugin {
 		pushover:          newPushoverClient(),
 		silo:              newSiloClient(),
 		keys:              newKeyAdmin(),
+		commands:          newSessionCommander(),
 		fetch:             &http.Client{Timeout: defaultPosterTimeout},
 		handled:           newEventLog(state),
 		hostInfoFn:        sdkHostInfo,

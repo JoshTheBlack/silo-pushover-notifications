@@ -27,6 +27,8 @@ func (s *routesServer) Handle(ctx context.Context, req *pluginv1.HandleHTTPReque
 			return errorResponse(apiErr(http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")), nil
 		}
 		return serveIndex(req), nil
+	case isStopPagePath(path):
+		return serveStopPage(req), nil
 	case strings.HasPrefix(path, "/api/"):
 		return s.plugin.serveAPI(ctx, req), nil
 	}
@@ -36,6 +38,11 @@ func (s *routesServer) Handle(ctx context.Context, req *pluginv1.HandleHTTPReque
 // serveIndex returns the settings page, pre-set to the viewer's Silo theme so
 // it doesn't flash the wrong colours.
 func serveIndex(req *pluginv1.HandleHTTPRequest) *pluginv1.HandleHTTPResponse {
+	return servePage(req, indexHTML)
+}
+
+// servePage returns an HTML page, pre-set to the viewer's Silo theme.
+func servePage(req *pluginv1.HandleHTTPRequest, html []byte) *pluginv1.HandleHTTPResponse {
 	theme := "auto"
 	if t := strings.ToLower(header(req, "X-Silo-Theme")); t != "" {
 		theme = "dark"
@@ -43,7 +50,7 @@ func serveIndex(req *pluginv1.HandleHTTPRequest) *pluginv1.HandleHTTPResponse {
 			theme = "light"
 		}
 	}
-	page := bytes.Replace(indexHTML, []byte(`data-theme="auto"`), []byte(`data-theme="`+theme+`"`), 1)
+	page := bytes.Replace(html, []byte(`data-theme="auto"`), []byte(`data-theme="`+theme+`"`), 1)
 	return &pluginv1.HandleHTTPResponse{
 		StatusCode: http.StatusOK,
 		Headers:    map[string]string{"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store"},
@@ -239,6 +246,9 @@ func (p *Plugin) serveAPI(ctx context.Context, req *pluginv1.HandleHTTPRequest) 
 			return errorResponse(apiErr(http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed."))
 		}
 		return p.handleKeySetup(ctx, req)
+	}
+	if len(parts) >= 2 && parts[0] == "admin" && parts[1] == "sessions" {
+		return p.serveSessionsAPI(ctx, req, parts[2:])
 	}
 	if len(parts) >= 2 && parts[0] == "admin" {
 		return p.serveAdminAPI(ctx, req, strings.Join(parts[1:], "/"))

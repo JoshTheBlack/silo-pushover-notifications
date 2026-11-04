@@ -548,6 +548,8 @@ type siloRequest struct {
 	method, baseURL, apiKey, path string
 	body                          any
 	ifMatch                       string
+	// respHeader, when set, receives the answer's headers (any status).
+	respHeader *http.Header
 }
 
 // siloCall sends one request and decodes a JSON answer into out (when out is
@@ -589,6 +591,9 @@ func siloCall(ctx context.Context, client *http.Client, timeout time.Duration, r
 		return err
 	}
 	defer resp.Body.Close()
+	if r.respHeader != nil {
+		*r.respHeader = resp.Header.Clone()
+	}
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
 		return errSiloKeyRejected

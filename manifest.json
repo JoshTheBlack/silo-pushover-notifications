@@ -67,7 +67,7 @@
           {
             "key": "control_api_key",
             "label": "Session control key (admin:sessions:control)",
-            "description": "Optional. An API key created on an admin account with the admin:sessions:control scope, for stopping streams from an alert. It can be the same key as above if that key has both scopes. Not used yet.",
+            "description": "Optional. An API key created on an admin account with the admin:sessions:control scope, for the stop-stream page (Apps > Pushover, admin section, \"Live streams\"). It can be the same key as above if that key has both scopes. \"Set up the read-only key\" with \"Also allow stopping streams\" ticked fills this in for you.",
             "control": "ADMIN_FORM_CONTROL_PASSWORD",
             "secret": true
           }
@@ -104,6 +104,18 @@
       "method": "*",
       "path": "/api/*",
       "access": "authenticated"
+    },
+    {
+      "id": "stop-stream-page",
+      "method": "GET",
+      "path": "/admin/sessions/*",
+      "access": "admin"
+    },
+    {
+      "id": "stop-stream-api",
+      "method": "*",
+      "path": "/api/admin/sessions/*",
+      "access": "admin"
     }
   ],
   "presentation": {
