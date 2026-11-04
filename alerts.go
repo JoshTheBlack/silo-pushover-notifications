@@ -82,7 +82,7 @@ func (p *Plugin) handlePlaybackEvent(ctx context.Context, eventID, eventName str
 		return fmt.Errorf("load admin alert settings: %w", err)
 	}
 	// With nobody opted in there's nothing to track for.
-	if !slices.ContainsFunc(admins, (*AdminSettings).anyEnabled) {
+	if !slices.ContainsFunc(admins, (*AdminSettings).wantsEvents) {
 		return nil
 	}
 
@@ -449,18 +449,36 @@ func (p *Plugin) dropHandled(ctx context.Context, log *slog.Logger, candidates [
 // fanOut sends every recipient's alert at once and records the ones that
 // are done. It reports whether any could go through on a retry.
 func (p *Plugin) fanOut(ctx context.Context, log *slog.Logger, recipients []*recipient, at time.Time) (retry bool) {
+	for _, again := range p.sendAll(ctx, log, recipients, at, 1) {
+		retry = retry || again
+	}
+	return retry
+}
+
+// sendAll sends every recipient's alert at once and records the ones that
+// are done. It returns, for each recipient, whether a retry could still get
+// its alert through. A scheduled task has no Silo retry to lean on, so it can
+// ask for more attempts, a second apart.
+func (p *Plugin) sendAll(ctx context.Context, log *slog.Logger, recipients []*recipient, at time.Time, attempts int) map[*recipient]bool {
 	var handled []string
+	retry := make(map[*recipient]bool, len(recipients))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, r := range recipients {
 		wg.Go(func() {
-			done, again := p.sendAdminAlert(ctx, log, r, at)
+			var done, again bool
+			for attempt := 1; ; attempt++ {
+				done, again = p.sendAdminAlert(ctx, log, r, at)
+				if !again || attempt >= attempts || sleepCtx(ctx, time.Second) != nil {
+					break
+				}
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			if done && r.key != "" {
 				handled = append(handled, r.key)
 			}
-			retry = retry || again
+			retry[r] = again
 		})
 	}
 	wg.Wait()

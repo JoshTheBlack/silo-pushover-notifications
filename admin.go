@@ -73,12 +73,19 @@ type AdminLimits struct {
 	BandwidthMbps int `json:"bandwidth_mbps"`
 	// BandwidthRemoteOnly counts only remote streams toward the bandwidth.
 	BandwidthRemoteOnly bool `json:"bandwidth_remote_only"`
+	// DiskPct and MemoryPct: the server health check reports a disk more
+	// than DiskPct full, or memory use over MemoryPct. Zero skips that check.
+	DiskPct   int `json:"disk_pct"`
+	MemoryPct int `json:"memory_pct"`
 }
 
 const (
 	maxUserStreams   = 100
 	maxServerStreams = 1000
 	maxBandwidthMbps = 100000
+	// maxPercentLimit is the highest disk or memory limit: at 100 percent
+	// nothing is ever over.
+	maxPercentLimit = 99
 )
 
 // limit returns the limit a limit alert uses.
@@ -152,6 +159,17 @@ func (s *AdminSettings) anyEnabled() bool {
 	return false
 }
 
+// wantsEvents reports whether an alert that follows Silo's events (not a
+// scheduled task) is switched on, which is when the plugin tracks sessions.
+func (s *AdminSettings) wantsEvents() bool {
+	for _, t := range adminAlertTypes {
+		if t.Group != groupScheduled && s.alert(t.Key).Enabled {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *AdminSettings) clone() *AdminSettings {
 	c := *s
 	c.Alerts = maps.Clone(s.Alerts)
@@ -198,6 +216,9 @@ func applyAdminInput(userID int, profileID, username string, in adminInput) (*Ad
 		if a.Title == "" && a.Message == "" {
 			a.Title, a.Message = t.DefaultTitle, t.DefaultMessage
 		}
+		if t.Parent != "" {
+			a.Enabled = s.Alerts[t.Parent].Enabled
+		}
 		s.Alerts[t.Key] = a
 	}
 
@@ -236,20 +257,23 @@ func applyAdminInput(userID int, profileID, username string, in adminInput) (*Ad
 
 	s.Limits.BandwidthRemoteOnly = in.Limits.BandwidthRemoteOnly
 	for _, l := range []struct {
-		kind  string
-		value int
-		max   int
-		set   *int
+		kind     string
+		value    int
+		max      int
+		optional bool
+		set      *int
 	}{
-		{alertStreamsUser, in.Limits.UserStreams, maxUserStreams, &s.Limits.UserStreams},
-		{alertStreamsServer, in.Limits.ServerStreams, maxServerStreams, &s.Limits.ServerStreams},
-		{alertBandwidth, in.Limits.BandwidthMbps, maxBandwidthMbps, &s.Limits.BandwidthMbps},
+		{alertStreamsUser, in.Limits.UserStreams, maxUserStreams, false, &s.Limits.UserStreams},
+		{alertStreamsServer, in.Limits.ServerStreams, maxServerStreams, false, &s.Limits.ServerStreams},
+		{alertBandwidth, in.Limits.BandwidthMbps, maxBandwidthMbps, false, &s.Limits.BandwidthMbps},
+		{alertHealth, in.Limits.DiskPct, maxPercentLimit, true, &s.Limits.DiskPct},
+		{alertHealth, in.Limits.MemoryPct, maxPercentLimit, true, &s.Limits.MemoryPct},
 	} {
 		t, _ := adminAlertTypeByKey(l.kind)
 		switch {
 		case l.value < 0 || l.value > l.max:
 			return nil, bad(fmt.Sprintf("%s: the limit must be between 1 and %d.", t.Label, l.max))
-		case l.value == 0 && s.Alerts[l.kind].Enabled:
+		case l.value == 0 && !l.optional && s.Alerts[l.kind].Enabled:
 			return nil, bad(t.Label + ": set a limit, or switch the alert off.")
 		}
 		*l.set = l.value

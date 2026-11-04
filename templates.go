@@ -115,7 +115,7 @@ func humanizeType(deliveryType string) string {
 	if s == "" {
 		return "Notification"
 	}
-	return strings.ToUpper(s[:1]) + s[1:]
+	return titleCase(s)
 }
 
 func seasonEpisode(season, episode *int) string {
@@ -211,6 +211,12 @@ const (
 
 	alertScanFailed = "scan.failed"
 	alertJobFailed  = "job.failed"
+
+	// Scheduled tasks. alertHealthRecovered is the wording for the recovery
+	// push and has no switch of its own: it follows alertHealth.
+	alertHealth          = "health"
+	alertHealthRecovered = "health.recovered"
+	alertDigest          = "digest.weekly"
 )
 
 // Alert groups, shown as headings on the page.
@@ -218,6 +224,9 @@ const (
 	groupPlayback = "playback"
 	groupWatchdog = "watchdog"
 	groupServer   = "server"
+	// groupScheduled alerts come from scheduled tasks rather than Silo's
+	// events.
+	groupScheduled = "scheduled"
 )
 
 // adminAlertType describes one admin alert with its default wording.
@@ -232,8 +241,11 @@ type adminAlertType struct {
 	// NoiseControlled alerts follow the admin's noise mode; the others
 	// always send.
 	NoiseControlled bool `json:"noise_controlled"`
-	// Limit is the number the alert compares against, for limit alerts.
-	Limit *alertLimit `json:"limit,omitempty"`
+	// Limits are the numbers the alert compares against.
+	Limits []alertLimit `json:"limits,omitempty"`
+	// Parent names the alert whose switch this one follows; it only has its
+	// own wording.
+	Parent string `json:"parent,omitempty"`
 	// Sample fills the placeholders for previews and test sends.
 	Sample map[string]string `json:"sample"`
 }
@@ -245,6 +257,9 @@ type alertLimit struct {
 	Label string `json:"label"`
 	Unit  string `json:"unit"`
 	Max   int    `json:"max"`
+	// Optional limits may stay empty (zero) with the alert on; the check they
+	// belong to is then skipped.
+	Optional bool `json:"optional,omitempty"`
 }
 
 func (t adminAlertType) defaults() AlertSettings {
@@ -336,7 +351,7 @@ var adminAlertTypes = []adminAlertType{
 		DefaultTitle:   "{user} is playing {count} streams",
 		DefaultMessage: "The limit is {limit}.\n{streams}",
 		Placeholders:   withPlaceholders("count", "limit", "streams"),
-		Limit:          &alertLimit{Key: "user_streams", Label: "Alert when one account plays more than", Unit: "streams", Max: maxUserStreams},
+		Limits:         []alertLimit{{Key: "user_streams", Label: "Alert when one account plays more than", Unit: "streams", Max: maxUserStreams}},
 		Sample:         sampleWith(map[string]string{"count": "3", "limit": "2", "streams": sampleStreams}),
 	},
 	{
@@ -347,7 +362,7 @@ var adminAlertTypes = []adminAlertType{
 		DefaultTitle:   "{count} streams playing",
 		DefaultMessage: "The limit is {limit}.\n{streams}",
 		Placeholders:   withPlaceholders("count", "limit", "streams"),
-		Limit:          &alertLimit{Key: "server_streams", Label: "Alert when more streams than this play at once", Unit: "streams", Max: maxServerStreams},
+		Limits:         []alertLimit{{Key: "server_streams", Label: "Alert when more streams than this play at once", Unit: "streams", Max: maxServerStreams}},
 		Sample:         sampleWith(map[string]string{"count": "3", "limit": "2", "streams": sampleStreams}),
 	},
 	{
@@ -358,7 +373,7 @@ var adminAlertTypes = []adminAlertType{
 		DefaultTitle:   "Streaming {total}",
 		DefaultMessage: "Over the limit of {limit}, across {count} streams.\n{streams}",
 		Placeholders:   withPlaceholders("total", "limit", "count", "streams"),
-		Limit:          &alertLimit{Key: "bandwidth_mbps", Label: "Alert when the total is over", Unit: "Mbps", Max: maxBandwidthMbps},
+		Limits:         []alertLimit{{Key: "bandwidth_mbps", Label: "Alert when the total is over", Unit: "Mbps", Max: maxBandwidthMbps}},
 		Sample:         sampleWith(map[string]string{"total": "24.0 Mbps", "limit": "20 Mbps", "count": "3", "streams": sampleStreams}),
 	},
 	{
@@ -404,6 +419,54 @@ var adminAlertTypes = []adminAlertType{
 		Placeholders:   []string{"job", "error", "details"},
 		Sample: map[string]string{
 			"job": "Library refresh", "error": "metadata provider timed out", "details": "Refreshed 120 of 480 items",
+		},
+	},
+	{
+		Key:            alertHealth,
+		Group:          groupScheduled,
+		Label:          "Server health problems",
+		Description:    "A scheduled check of Silo's health finds something new wrong: a node that isn't healthy, Silo needing a restart, the database or Redis not answering, or the server's disk or memory over your limits. You hear about each problem once, and again only if it comes back after a recovery.",
+		DefaultTitle:   "Silo needs attention",
+		DefaultMessage: "{problems}\n{ongoing}",
+		Placeholders:   []string{"problems", "count", "ongoing"},
+		Limits: []alertLimit{
+			{Key: "disk_pct", Label: "Alert when a disk is more than", Unit: "% full", Max: maxPercentLimit, Optional: true},
+			{Key: "memory_pct", Label: "Alert when memory use is over", Unit: "%", Max: maxPercentLimit, Optional: true},
+		},
+		Sample: map[string]string{
+			"problems": "Transcode node “gpu-1” isn't healthy\nDisk “library-1” is 93% full (limit 90%)",
+			"count":    "2",
+			"ongoing":  "Still open: Silo needs a restart (plugin task binding)",
+		},
+	},
+	{
+		Key:            alertHealthRecovered,
+		Group:          groupScheduled,
+		Parent:         alertHealth,
+		Label:          "Server recovered",
+		Description:    "Sent when a problem you were told about is fixed. It's on whenever server health problems are.",
+		DefaultTitle:   "Silo recovered",
+		DefaultMessage: "{resolved}\n{ongoing}",
+		Placeholders:   []string{"resolved", "count", "ongoing"},
+		Sample: map[string]string{
+			"resolved": "Transcode node “gpu-1” is healthy again\nDisk “library-1” is down to 84%",
+			"count":    "2",
+			"ongoing":  "",
+		},
+	},
+	{
+		Key:            alertDigest,
+		Group:          groupScheduled,
+		Label:          "Weekly digest",
+		Description:    "A summary of the last 7 days: plays, time watched, who watched the most and the most played titles. The users you ignore are left out of the top viewers.",
+		DefaultTitle:   "Silo this week",
+		DefaultMessage: "{plays} plays · {watch_time} watched\n{profiles} profiles · {transcode_pct} transcoded · {completion} finished\n{top_users}\n{top_titles}",
+		Placeholders:   []string{"plays", "watch_time", "profiles", "transcodes", "transcode_pct", "completion", "days", "top_users", "top_titles"},
+		Sample: map[string]string{
+			"plays": "128", "watch_time": "41h 20m", "profiles": "6", "transcodes": "41", "transcode_pct": "32%",
+			"completion": "78%", "days": "7",
+			"top_users":  "Top viewers\n1. alice (Kids) · 31 plays · 12h 5m\n2. bob (Bob) · 22 plays · 9h 40m\n3. sam (Sam) · 18 plays · 7h 2m",
+			"top_titles": "Top titles\n1. Severance · 14 plays\n2. The Bear · 9 plays\n3. Dune: Part Two · 6 plays",
 		},
 	},
 }

@@ -156,6 +156,11 @@ type harness struct {
 	catalog   map[string][]string
 	calls     map[string]int
 	failPaths map[string]bool
+	// static maps a path to the JSON the fake Silo answers it with (the
+	// health and statistics routes).
+	static map[string]any
+	// lastQuery is the query string of the last request to each path.
+	lastQuery map[string]string
 }
 
 type fakeAccount struct {
@@ -190,7 +195,7 @@ func newHarness(t *testing.T) *harness {
 
 	slowPoster := make(chan struct{})
 	h := &harness{pushover: fp, pushURL: pushoverSrv.URL, userCalls: map[string]int{}, devices: map[string][]string{},
-		ips: map[string][]map[string]any{}, catalog: map[string][]string{}, calls: map[string]int{}, failPaths: map[string]bool{}, accounts: map[string]fakeAccount{
+		ips: map[string][]map[string]any{}, catalog: map[string][]string{}, calls: map[string]int{}, failPaths: map[string]bool{}, static: map[string]any{}, lastQuery: map[string]string{}, accounts: map[string]fakeAccount{
 			"7":  {"josh", "admin", true},
 			"9":  {"sam", "admin", true},
 			"12": {"alice", "user", true},
@@ -213,7 +218,9 @@ func newHarness(t *testing.T) *harness {
 		h.siloMu.Lock()
 		h.siloAuth = append(h.siloAuth, r.Header.Get("Authorization"))
 		h.calls[r.URL.Path]++
+		h.lastQuery[r.URL.Path] = r.URL.RawQuery
 		failing := h.failPaths[r.URL.Path]
+		staticBody, isStatic := h.static[r.URL.Path]
 		h.siloMu.Unlock()
 		switch {
 		case failing:
@@ -227,6 +234,8 @@ func newHarness(t *testing.T) *harness {
 			w.WriteHeader(http.StatusForbidden)
 		case r.Header.Get("Authorization") != "Bearer "+testMonitorKey:
 			w.WriteHeader(http.StatusUnauthorized)
+		case isStatic:
+			_ = json.NewEncoder(w).Encode(staticBody)
 		case r.URL.Path == "/api/v2/admin/users/7/profiles":
 			_, _ = io.WriteString(w, `{"items":[{"id":"p1","name":"Josh"},{"id":"p2","name":"Kid"},{"id":"p3","name":"Kid"}]}`)
 		case r.URL.Path == "/api/v2/admin/sessions":

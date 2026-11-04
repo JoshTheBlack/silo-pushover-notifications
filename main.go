@@ -28,8 +28,9 @@ type Plugin struct {
 	logger   *slog.Logger
 	store    *profileStore
 	admins   *adminStore
-	watch    *watchStore // live sessions, noise control and limit marks
-	seen     *seenStore  // known devices and addresses per account
+	watch    *watchStore  // live sessions, noise control and limit marks
+	seen     *seenStore   // known devices and addresses per account
+	health   *healthStore // the health check's result and what admins were told
 	pushover *pushoverClient
 	silo     *siloClient
 	fetch    *http.Client // poster downloads
@@ -73,6 +74,9 @@ type Plugin struct {
 	eventTimeout time.Duration
 	// posterTimeout bounds the poster lookup and download for one message.
 	posterTimeout time.Duration
+	// taskTimeout bounds one scheduled task run; taskNow is its clock.
+	taskTimeout time.Duration
+	taskNow     func() time.Time
 }
 
 const (
@@ -87,6 +91,7 @@ func newPlugin(logger *slog.Logger, state stateBackend) *Plugin {
 		admins:            newAdminStore(state),
 		watch:             newWatchStore(state),
 		seen:              newSeenStore(state),
+		health:            newHealthStore(state),
 		pushover:          newPushoverClient(),
 		silo:              newSiloClient(),
 		keys:              newKeyAdmin(),
@@ -98,6 +103,8 @@ func newPlugin(logger *slog.Logger, state stateBackend) *Plugin {
 		setGlobalConfigFn: sdkSetGlobalConfig,
 		eventTimeout:      defaultEventTimeout,
 		posterTimeout:     defaultPosterTimeout,
+		taskTimeout:       taskTimeout,
+		taskNow:           time.Now,
 	}
 }
 
@@ -222,6 +229,7 @@ func main() {
 			Runtime:       &runtimeServer{manifest: manifest, plugin: plugin},
 			EventConsumer: &eventServer{plugin: plugin},
 			HttpRoutes:    &routesServer{plugin: plugin},
+			ScheduledTask: &taskServer{plugin: plugin},
 		},
 	})
 }

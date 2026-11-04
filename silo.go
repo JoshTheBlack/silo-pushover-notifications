@@ -210,6 +210,178 @@ func (c *siloClient) Sessions(ctx context.Context, baseURL, apiKey string) ([]ad
 	return nil, errors.New("Silo listed too many live sessions")
 }
 
+// siloNode is the part of Silo's AdminNodeSummary the health check reads.
+type siloNode struct {
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Type            string     `json:"type"`
+	Enabled         bool       `json:"enabled"`
+	Healthy         bool       `json:"healthy"`
+	LastHealthCheck *time.Time `json:"last_health_check"`
+}
+
+// NodeSummaries lists Silo's stream nodes (GET /api/v2/admin/nodes/summary,
+// allowed by admin:monitor:read), following the pages.
+func (c *siloClient) NodeSummaries(ctx context.Context, baseURL, apiKey string) ([]siloNode, error) {
+	if apiKey == "" {
+		return nil, errSiloKeyMissing
+	}
+	var all []siloNode
+	cursor := ""
+	for range 10 {
+		path := "/api/v2/admin/nodes/summary?limit=200"
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		var page struct {
+			Items []siloNode `json:"items"`
+			Page  *pageInfo  `json:"page"`
+		}
+		if err := c.get(ctx, baseURL, apiKey, path, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Items...)
+		if cursor = page.Page.next(); cursor == "" {
+			return all, nil
+		}
+	}
+	return nil, errors.New("Silo listed too many nodes")
+}
+
+// siloComponent is one dependency's health in AdminServerStatus: OK is
+// absent when Silo hasn't checked it.
+type siloComponent struct {
+	Configured bool  `json:"configured"`
+	OK         *bool `json:"ok"`
+}
+
+// siloServerStatus is the part of AdminServerStatus the health check reads.
+type siloServerStatus struct {
+	RestartRequired        bool     `json:"restart_required"`
+	RestartRequiredReason  string   `json:"restart_required_reason"`
+	RestartRequiredReasons []string `json:"restart_required_reasons"`
+	Health                 struct {
+		Postgres siloComponent `json:"postgres"`
+		Redis    siloComponent `json:"redis"`
+	} `json:"health"`
+}
+
+// ServerStatus reads restart state and dependency health
+// (GET /api/v2/admin/server/status, allowed by admin:monitor:read).
+func (c *siloClient) ServerStatus(ctx context.Context, baseURL, apiKey string) (*siloServerStatus, error) {
+	if apiKey == "" {
+		return nil, errSiloKeyMissing
+	}
+	var status siloServerStatus
+	if err := c.get(ctx, baseURL, apiKey, "/api/v2/admin/server/status", &status); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
+// siloDisk is one mount in AdminSystemStats. Scoped keys get no path, only a
+// role ("scratch", "library-1", ...).
+type siloDisk struct {
+	Path        string  `json:"path"`
+	Role        string  `json:"role"`
+	UsedGB      float64 `json:"used_gb"`
+	TotalGB     float64 `json:"total_gb"`
+	Stale       bool    `json:"stale"`
+	Unavailable bool    `json:"unavailable"`
+	Scratch     bool    `json:"scratch"`
+}
+
+// siloResources is the part of AdminSystemResources the health check reads:
+// the last sample of the API server that answered.
+type siloResources struct {
+	Available bool `json:"available"`
+	Stale     bool `json:"stale"`
+	System    *struct {
+		MemUsedMB  int64      `json:"mem_used_mb"`
+		MemTotalMB int64      `json:"mem_total_mb"`
+		Disks      []siloDisk `json:"disks"`
+	} `json:"system"`
+}
+
+// SystemResources reads the server's last resource sample
+// (GET /api/v2/admin/system/resources, allowed by admin:monitor:read).
+func (c *siloClient) SystemResources(ctx context.Context, baseURL, apiKey string) (*siloResources, error) {
+	if apiKey == "" {
+		return nil, errSiloKeyMissing
+	}
+	var res siloResources
+	if err := c.get(ctx, baseURL, apiKey, "/api/v2/admin/system/resources", &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+// siloTopActivity is AdminDashboardTopActivity.
+type siloTopActivity struct {
+	Limit    int `json:"limit"`
+	Profiles []struct {
+		UserID       string `json:"user_id"`
+		Username     string `json:"username"`
+		ProfileName  string `json:"profile_name"`
+		Plays        int64  `json:"plays"`
+		TotalSeconds int64  `json:"total_seconds"`
+	} `json:"profiles"`
+	Titles []struct {
+		Title        string `json:"title"`
+		MediaType    string `json:"media_type"`
+		Plays        int64  `json:"plays"`
+		TotalSeconds int64  `json:"total_seconds"`
+	} `json:"titles"`
+}
+
+// TopActivity reads the most active profiles and most played titles of the
+// last days days (GET /api/v2/admin/stats/top-activity, allowed by
+// admin:monitor:read). Silo caps days at 30 and limit at 25.
+func (c *siloClient) TopActivity(ctx context.Context, baseURL, apiKey string, days, limit int) (*siloTopActivity, error) {
+	if apiKey == "" {
+		return nil, errSiloKeyMissing
+	}
+	var top siloTopActivity
+	path := fmt.Sprintf("/api/v2/admin/stats/top-activity?days=%d&limit=%d", days, limit)
+	if err := c.get(ctx, baseURL, apiKey, path, &top); err != nil {
+		return nil, err
+	}
+	return &top, nil
+}
+
+// siloPlaybackActivity is the part of AdminDashboardPlaybackActivity the
+// digest reads.
+type siloPlaybackActivity struct {
+	Buckets []struct {
+		Direct    int64 `json:"direct"`
+		Remux     int64 `json:"remux"`
+		Transcode int64 `json:"transcode"`
+	} `json:"buckets"`
+	Reliability struct {
+		SessionsStarted   int64   `json:"sessions_started"`
+		TranscodeStarts   int64   `json:"transcode_starts"`
+		FinalizedSessions int64   `json:"finalized_sessions"`
+		CompletedSessions int64   `json:"completed_sessions"`
+		CompletionRate    float64 `json:"completion_rate"`
+		UniqueProfiles    int64   `json:"unique_profiles"`
+	} `json:"reliability"`
+}
+
+// PlaybackActivity reads how much was played over the last hours hours
+// (GET /api/v2/admin/stats/playback-activity, allowed by admin:monitor:read).
+// Silo caps hours at 744.
+func (c *siloClient) PlaybackActivity(ctx context.Context, baseURL, apiKey string, hours int) (*siloPlaybackActivity, error) {
+	if apiKey == "" {
+		return nil, errSiloKeyMissing
+	}
+	var act siloPlaybackActivity
+	path := fmt.Sprintf("/api/v2/admin/stats/playback-activity?hours=%d", hours)
+	if err := c.get(ctx, baseURL, apiKey, path, &act); err != nil {
+		return nil, err
+	}
+	return &act, nil
+}
+
 // UserDevices lists the device IDs Silo knows for an account
 // (GET /api/v2/admin/users/{id}/devices). A deleted account has none.
 func (c *siloClient) UserDevices(ctx context.Context, baseURL, apiKey, userID string) ([]string, error) {

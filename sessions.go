@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Playback lifecycle events Silo publishes on its admin sessions channel
@@ -434,10 +436,13 @@ func endReasonLabel(r string) string {
 }
 
 func titleCase(s string) string {
-	if s == "" {
-		return ""
+	// Cut at a character, not a byte: a first byte of a multi-byte character
+	// would come out as a replacement character.
+	first, size := utf8.DecodeRuneInString(s)
+	if size == 0 || first == utf8.RuneError {
+		return s
 	}
-	return strings.ToUpper(s[:1]) + s[1:]
+	return string(unicode.ToUpper(first)) + s[size:]
 }
 
 // clock formats seconds as 1:02:03 or 2:03.

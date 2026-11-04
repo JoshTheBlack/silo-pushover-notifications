@@ -110,6 +110,12 @@
     .limit input[type="number"] { width: 110px; }
     .limit .switch { flex-basis: 100%; margin-top: 4px; }
     @media (max-width: 640px) { .limit { margin-left: 0; } }
+    .nosw { margin-left: 50px; font-size: 14px; }
+    .nosw .t { font-weight: 600; }
+    .nosw .d { color: var(--muted); font-size: 13px; }
+    @media (max-width: 640px) { .nosw { margin-left: 0; } }
+    .setup pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; overflow: auto; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .setup ol { padding-left: 20px; margin: 8px 0; }
     .group-sub { margin: -4px 0 4px; }
     fieldset.field { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
     fieldset.field legend { padding: 0; }
@@ -614,7 +620,7 @@
 
   function draftFrom(settings) {
     const d = JSON.parse(JSON.stringify(settings));
-    d.limits = { user_streams: 0, server_streams: 0, bandwidth_mbps: 0, bandwidth_remote_only: false, ...(d.limits || {}) };
+    d.limits = { user_streams: 0, server_streams: 0, bandwidth_mbps: 0, bandwidth_remote_only: false, disk_pct: 0, memory_pct: 0, ...(d.limits || {}) };
     d.filters.libraries = d.filters.libraries || [];
     return d;
   }
@@ -661,15 +667,15 @@
     $("#adminAlerts").innerHTML = `
       <section class="card" aria-labelledby="alertsTitle">
         <h2 id="alertsTitle">Admin alerts<span class="badge">Admin</span></h2>
-        <p class="sub">Get a Pushover alert when someone plays something on your server, when streams go over the limits you set, when someone uses a new device or address, and when a scan or job fails. Every alert is off until you switch it on. Alerts are sent only to you, with the Pushover settings of <strong>${esc(activeProfileName())}</strong> above; other admins set up their own. Only server admins see this section.</p>
+        <p class="sub">Get a Pushover alert when someone plays something on your server, when streams go over the limits you set, when someone uses a new device or address, when a scan or job fails, when the server's health changes, and a weekly summary. Every alert is off until you switch it on. Alerts are sent only to you, with the Pushover settings of <strong>${esc(activeProfileName())}</strong> above; other admins set up their own. Only server admins see this section.</p>
         <div id="adminReady">${readyNotice()}</div>
         ${ALERT_GROUPS.map((g) => {
           const types = d.alert_types.filter((t) => (t.group || "playback") === g.key);
-          return types.length ? `<h3>${esc(g.title)}</h3><p class="help group-sub">${esc(g.help)}</p><div class="alerts">${types.map(renderAlert).join("")}</div>` : "";
+          return types.length ? `<h3>${esc(g.title)}</h3><p class="help group-sub">${esc(g.help)}</p>${g.key === "scheduled" ? scheduledSetup() : ""}<div class="alerts">${types.map(renderAlert).join("")}</div>` : "";
         }).join("")}
 
         <h3>Filters</h3>
-        <p class="help" style="margin-top:0">Filters apply to the playback alerts. Users to ignore also applies to the alerts about one account: too many streams for one person, new device and new IP address.</p>
+        <p class="help" style="margin-top:0">Filters apply to the playback alerts. Users to ignore also applies to the alerts about one account (too many streams for one person, new device and new IP address) and leaves those people out of the weekly digest's top viewers.</p>
         <div class="checks" style="margin:12px 0 16px">
           <label class="switch"><input type="checkbox" id="fRemote"${dr.filters.only_remote ? " checked" : ""}>
             <span><span class="t">Only remote streams</span><br><span class="d">Skips streams Silo sees as local. A stream whose location Silo can't tell counts as local.</span></span></label>
@@ -720,9 +726,11 @@
     const id = "al_" + t.key.replace(/\W/g, "_");
     return `
       <div class="type" data-alert="${esc(t.key)}">
-        <label class="switch"><input type="checkbox" data-k="enabled"${a.enabled ? " checked" : ""}>
-          <span><span class="t">${esc(t.label)}</span><br><span class="d">${esc(t.description)}${t.noise_controlled || t.group !== "playback" ? "" : " Always sent when it's on, whatever the noise mode."}</span></span></label>
-        ${t.limit ? limitRow(t, id) : ""}
+        ${t.parent
+          ? `<div class="nosw"><span class="t">${esc(t.label)}</span><br><span class="d">${esc(t.description)}</span></div>`
+          : `<label class="switch"><input type="checkbox" data-k="enabled"${a.enabled ? " checked" : ""}>
+          <span><span class="t">${esc(t.label)}</span><br><span class="d">${esc(t.description)}${t.noise_controlled || t.group !== "playback" ? "" : " Always sent when it's on, whatever the noise mode."}</span></span></label>`}
+        ${(t.limits || []).map((l) => limitRow(t, l, id)).join("")}
         <details>
           <summary>Customize wording</summary>
           <div class="editor">
@@ -753,17 +761,40 @@
     { key: "playback", title: "Playback", help: "One alert per stream event. The noise mode below thins these out." },
     { key: "watchdog", title: "Watchdog", help: "Limits, and accounts showing up somewhere new. Each comes once per change, so the noise mode doesn't apply." },
     { key: "server", title: "Server problems", help: "Sent every time, whatever the noise mode." },
+    { key: "scheduled", title: "Scheduled checks", help: "Silo runs these on a schedule, so they only work once the tasks are turned on (see below). Sent every time, whatever the noise mode." },
   ];
 
-  function limitRow(t, id) {
-    const v = adminDraft.limits[t.limit.key];
+  // How to turn on the scheduled tasks. Silo runs a plugin's task only when an
+  // admin binds it to a schedule, and a binding change needs a Silo restart.
+  function scheduledSetup() {
+    return `<details class="plain setup" id="taskSetup">
+      <summary>How to turn the scheduled tasks on</summary>
+      <p class="help">The switches below say who gets the alerts. Silo only runs the checks when you give them a schedule, and the plugin can't do that for you. Once, as the server admin:</p>
+      <ol class="help">
+        <li>Open <strong>Admin &gt; Plugins</strong> and open <strong>Pushover Notifications</strong>.</li>
+        <li>Under its scheduled tasks, switch on <strong>Pushover server health check</strong> and set it to run every 5 minutes, and <strong>Pushover weekly digest</strong> set to run weekly on Sunday at 18:00 (the server's time).</li>
+        <li><strong>Restart Silo.</strong> A change to a task's schedule only takes effect after a restart, and Silo says when one is needed.</li>
+      </ol>
+      <p class="help">Or do it with the API, using an admin API key (replace <code>ID</code> with this plugin's installation number from Admin &gt; Plugins):</p>
+      <pre>PUT /api/v2/admin/plugins/installations/ID/task-bindings/health_check
+{"enabled": true, "trigger": {"type": "interval", "interval_ms": 300000}}
+
+PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
+{"enabled": true, "trigger": {"type": "weekly", "day_of_week": 0, "time_of_day": "18:00"}}</pre>
+      <p class="help">Until a task has a schedule, Silo runs it once each time it starts. Both tasks need the read-only Silo key, and each admin switches the alerts on for themselves here. A health check tells you about a problem once, then again when it's fixed.</p>
+    </details>`;
+  }
+
+  function limitRow(t, lim, id) {
+    const v = adminDraft.limits[lim.key];
     const remote = t.key === "bandwidth"
       ? `<label class="switch"><input type="checkbox" data-remote-only${adminDraft.limits.bandwidth_remote_only ? " checked" : ""}>
           <span><span class="t">Count only remote streams</span><br><span class="d">For a limit on your upload: local streams don't use it.</span></span></label>`
       : "";
-    return `<div class="limit"><label for="${id}_limit">${esc(t.limit.label)}</label>
-      <input type="number" id="${id}_limit" data-limit="${esc(t.limit.key)}" min="1" max="${esc(t.limit.max)}" step="1" inputmode="numeric" value="${esc(v || "")}">
-      <span class="muted">${esc(t.limit.unit)}</span>${remote}</div>`;
+    const lid = `${id}_${lim.key}`;
+    return `<div class="limit"><label for="${lid}">${esc(lim.label)}</label>
+      <input type="number" id="${lid}" data-limit="${esc(lim.key)}" min="1" max="${esc(lim.max)}" step="1" inputmode="numeric" value="${esc(v || "")}"${lim.optional ? ` placeholder="off"` : ""}>
+      <span class="muted">${esc(lim.unit)}</span>${remote}</div>`;
   }
 
   function libraryChecks() {
@@ -850,7 +881,11 @@
         const k = input.dataset.k;
         const ev = input.tagName === "SELECT" || input.type === "checkbox" ? "change" : "input";
         input.addEventListener(ev, () => {
-          if (k === "enabled") a.enabled = input.checked;
+          if (k === "enabled") {
+            a.enabled = input.checked;
+            // An alert that follows this one's switch.
+            adminData.alert_types.filter((x) => x.parent === t.key).forEach((x) => { adminDraft.alerts[x.key].enabled = a.enabled; });
+          }
           else if (k === "priority") a.priority = input.value === "" ? null : Number(input.value);
           else a[k] = input.value;
           markAdminDirty();
@@ -940,11 +975,12 @@
   // Returns [message, input] when a limit can't be saved.
   function limitProblem() {
     for (const t of adminData.alert_types) {
-      if (!t.limit) continue;
-      const v = adminDraft.limits[t.limit.key] || 0;
-      const input = $(`#adminAlerts [data-limit="${CSS.escape(t.limit.key)}"]`);
-      if (!Number.isFinite(v) || v < 0 || v > t.limit.max) return [`${t.label}: enter a limit between 1 and ${t.limit.max}.`, input];
-      if (adminDraft.alerts[t.key].enabled && !v) return [`${t.label}: set a limit, or switch the alert off.`, input];
+      for (const lim of t.limits || []) {
+        const v = adminDraft.limits[lim.key] || 0;
+        const input = $(`#adminAlerts [data-limit="${CSS.escape(lim.key)}"]`);
+        if (!Number.isFinite(v) || v < 0 || v > lim.max) return [`${t.label}: enter a limit between 1 and ${lim.max}${lim.optional ? ", or leave it empty" : ""}.`, input];
+        if (!lim.optional && adminDraft.alerts[t.key].enabled && !v) return [`${t.label}: set a limit, or switch the alert off.`, input];
+      }
     }
     return null;
   }
