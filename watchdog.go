@@ -402,6 +402,14 @@ func (w *watchStore) decide(ctx context.Context, log *slog.Logger, ev *watchEven
 	now := w.now()
 	pb := ev.pb
 
+	// Silo doesn't deliver events in order, so a pause or resume can arrive
+	// after its session's stop. One from no later than the stop is stale.
+	stale := false
+	if m := sessions[pb.SessionID]; m != nil && !m.End.IsZero() &&
+		(pb.Event == eventSessionPaused || pb.Event == eventSessionResumed) && !pb.At.After(m.End) {
+		stale = true
+	}
+
 	if m := sessions[pb.SessionID]; m != nil && pb.Event == eventSessionStopped {
 		if m.Location != "" {
 			pb.Location = m.Location
@@ -441,6 +449,9 @@ func (w *watchStore) decide(ctx context.Context, log *slog.Logger, ev *watchEven
 			}
 			r.vars = counts.vars(r.admin, r.kind, subject, pbVars)
 		case isPlaybackAlert(r.kind):
+			if stale {
+				continue
+			}
 			if pb.Event == eventSessionStopped && !r.admin.Filters.match(*pb) {
 				continue
 			}

@@ -371,6 +371,28 @@ func TestStopRemembersStartLocation(t *testing.T) {
 	}
 }
 
+// Silo delivers events out of order: a pause that happened before the stop
+// but arrives after it is dropped; a later one (a new pause) still goes out.
+func TestLatePauseAfterStopIsDropped(t *testing.T) {
+	h := newHarness(t)
+	h.optInAdmin(t, 7, "p1", testUserKey, nil)
+	h.mustHandle(t,
+		sessionEvent(t, eventSessionStarted, "e1", "session_started", at(0)),
+		sessionEvent(t, eventSessionStopped, "e3", "session_stopped", at(10)),
+		sessionEvent(t, eventSessionPaused, "e2", "session_paused", at(9)),
+	)
+	got := titles(h.sentTo(testUserKey))
+	if len(got) != 2 || strings.Contains(strings.Join(got, "|"), "paused") {
+		t.Fatalf("titles = %q, want only the start and the stop", got)
+	}
+
+	// A pause stamped after the recorded stop isn't stale.
+	h.mustHandle(t, sessionEvent(t, eventSessionPaused, "e4", "session_paused", at(11)))
+	if got := titles(h.sentTo(testUserKey)); len(got) != 3 {
+		t.Fatalf("a pause after the stop time was dropped: %q", got)
+	}
+}
+
 func TestNoiseCooldown(t *testing.T) {
 	h := newHarness(t)
 	h.optInAdmin(t, 7, "p1", testUserKey, func(a *AdminSettings) { a.Noise = NoiseSettings{Mode: noiseCooldown, WindowMinutes: 30} })
