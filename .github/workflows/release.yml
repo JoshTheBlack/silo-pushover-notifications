@@ -1,7 +1,16 @@
-# Builds a release when a version tag (v1.2.3) is pushed. The tag must match
-# manifest.json's version. The release is created as a draft: check it, then
-# publish it on GitHub. Publishing makes it the "latest" release, which is what
-# Silo's catalog URL points at, so servers only see it once it's published:
+# Builds a stable release for manifest.json's version (tag v<version>).
+#
+# Start it either way:
+#   - Actions > Release > Run workflow, on main. Creates a draft release; the
+#     tag is created when the draft is published.
+#   - Push a tag v<version>, or publish a release with a new tag on GitHub.
+#     Creates a draft, or attaches the files to the release that already exists.
+#
+# A release that already has catalog.json is left alone, so the run started by
+# publishing the draft (which creates the tag) does nothing.
+#
+# Publishing makes it the "latest" release, which Silo's stable catalog URL
+# points at, so servers only see it once it's published:
 #
 #   https://github.com/<owner>/<repo>/releases/latest/download/catalog.json
 name: Release
@@ -9,9 +18,14 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -19,40 +33,84 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: Check the tag matches manifest.json
+      - name: Check the version
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version="$(jq -r .version manifest.json)"
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+          tag="v$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::manifest.json version $version isn't a plain release version like 1.2.3"
+            exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_NAME" != "$tag" ]; then
             echo "::error::tag $GITHUB_REF_NAME doesn't match manifest.json version $version"
             exit 1
           fi
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::run the release on main, not $GITHUB_REF_NAME"
+            exit 1
+          fi
+          tagged="$(git ls-remote --tags origin | grep -E "refs/tags/$tag(\^\{\})?\$" | cut -f1)"
+          if [ -n "$tagged" ] && ! echo "$tagged" | grep -qx "$GITHUB_SHA"; then
+            echo "::error::$tag already points at another commit"
+            exit 1
+          fi
+          if assets="$(gh release view "$tag" --json assets -q '.assets[].name' 2>/dev/null)"; then
+            if echo "$assets" | grep -qx catalog.json; then
+              echo "$tag already has its files; nothing to do."
+              echo "mode=skip" >> "$GITHUB_OUTPUT"
+            else
+              echo "mode=upload" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "mode=create" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.check.outputs.mode != 'skip'
+        with:
+          go-version-file: go.mod
 
       - name: Test
+        if: steps.check.outputs.mode != 'skip'
         run: |
           test -z "$(gofmt -l .)" || { gofmt -l .; echo "::error::run gofmt"; exit 1; }
           go vet ./...
           go test ./...
 
       - name: Build
+        if: steps.check.outputs.mode != 'skip'
         run: >
           go run ./scripts/package -out dist
-          -release-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          -release-url "https://github.com/$GITHUB_REPOSITORY/releases/download/${{ steps.check.outputs.tag }}"
           -repo-url "https://github.com/$GITHUB_REPOSITORY"
 
       - name: Check a binary reports its manifest
+        if: steps.check.outputs.mode != 'skip'
         run: |
           chmod +x dist/release/plugin-linux-amd64
-          dist/release/plugin-linux-amd64 manifest | jq -e --arg v "${GITHUB_REF_NAME#v}" '.version == $v'
+          dist/release/plugin-linux-amd64 manifest | jq -e --arg v "$(jq -r .version manifest.json)" '.version == $v'
 
       - name: Create the draft release
+        if: steps.check.outputs.mode == 'create'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.check.outputs.tag }}
         run: >
-          gh release create "$GITHUB_REF_NAME" --draft --verify-tag
-          --title "$GITHUB_REF_NAME" --generate-notes
+          gh release create "$TAG" --draft --target "$GITHUB_SHA"
+          --title "$TAG" --generate-notes
+          dist/release/catalog.json dist/release/checksums.txt dist/release/plugin-*
+          dist/*.zip dist/SHA256SUMS.txt
+
+      - name: Attach the files to the existing release
+        if: steps.check.outputs.mode == 'upload'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.check.outputs.tag }}
+        run: >
+          gh release upload "$TAG" --clobber
           dist/release/catalog.json dist/release/checksums.txt dist/release/plugin-*
           dist/*.zip dist/SHA256SUMS.txt
