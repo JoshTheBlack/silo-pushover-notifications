@@ -39,6 +39,44 @@ type ProfileSettings struct {
 	IncludeLink  bool                    `json:"include_link"`
 	Types        map[string]TypeSettings `json:"types"`
 	UpdatedAt    time.Time               `json:"updated_at"`
+
+	// The fields below came with 0.3.0. Settings saved by 0.2.0 don't have
+	// them and load with everything off.
+
+	// EpisodeReasons limits new-episode notifications to episodes Silo lists
+	// at least one of these reasons for (reasonFavorite and so on). Empty
+	// means every episode.
+	EpisodeReasons []string `json:"episode_reasons,omitempty"`
+	// GroupMinutes holds a show's first new episode for this many minutes and
+	// merges the ones that follow into one notification. Zero sends each
+	// episode on its own.
+	GroupMinutes int `json:"group_minutes,omitempty"`
+	// TimeZone is the IANA time zone the browser reported when the profile
+	// last saved. Quiet hours are in it; empty means UTC.
+	TimeZone string `json:"time_zone,omitempty"`
+	// Quiet turns this profile's notifications down between two times of day.
+	Quiet QuietHours `json:"quiet,omitzero"`
+}
+
+// Reasons Silo gives for a new episode (reason_flags on episode.available).
+const (
+	reasonFavorite         = "favorite"
+	reasonWatchlist        = "watchlist"
+	reasonContinueWatching = "continue_watching"
+	reasonNextUp           = "next_up"
+
+	minGroupMinutes = 1
+	maxGroupMinutes = 120
+	// defaultGroupMinutes is what the page offers when grouping is switched on.
+	defaultGroupMinutes = 5
+)
+
+// episodeReasonOptions are the reasons the page offers, in its order.
+var episodeReasonOptions = []option{
+	{reasonFavorite, "Favorites"},
+	{reasonWatchlist, "Watchlist"},
+	{reasonContinueWatching, "Continue Watching"},
+	{reasonNextUp, "Next Up"},
 }
 
 // TypeSettings controls one notification type for a profile.
@@ -50,6 +88,18 @@ type TypeSettings struct {
 	Priority *int `json:"priority,omitempty"`
 	// Sound overrides the profile default when non-empty.
 	Sound string `json:"sound,omitempty"`
+	// GroupTitle and GroupMessage are the wording of a merged notification, for
+	// the types that can be merged. Both empty means the type's default.
+	GroupTitle   string `json:"group_title,omitempty"`
+	GroupMessage string `json:"group_message,omitempty"`
+}
+
+// groupWording is the title and message template of a merged notification.
+func (ts TypeSettings) groupWording(t notificationType) (title, message string) {
+	if ts.GroupTitle == "" && ts.GroupMessage == "" {
+		return t.DefaultGroupTitle, t.DefaultGroupMessage
+	}
+	return ts.GroupTitle, ts.GroupMessage
 }
 
 // typeSettings returns the stored settings for a type, or its defaults.
@@ -60,9 +110,40 @@ func (s *ProfileSettings) typeSettings(key string) TypeSettings {
 	return notificationTypeByKey(key).defaults()
 }
 
+// wantsEpisode reports whether the profile's reason filter lets an episode
+// with these reasons through.
+func (s *ProfileSettings) wantsEpisode(f deliveryFlags) bool {
+	if len(s.EpisodeReasons) == 0 {
+		return true
+	}
+	for _, r := range s.EpisodeReasons {
+		if (r == reasonFavorite && f.Favorite) || (r == reasonWatchlist && f.Watchlist) ||
+			(r == reasonContinueWatching && f.ContinueWatching) || (r == reasonNextUp && f.NextUp) {
+			return true
+		}
+	}
+	return false
+}
+
+// groupWindow is how long a show's first new episode is held; zero when the
+// profile doesn't group.
+func (s *ProfileSettings) groupWindow() time.Duration {
+	if s.GroupMinutes < minGroupMinutes {
+		return 0
+	}
+	return time.Duration(min(s.GroupMinutes, maxGroupMinutes)) * time.Minute
+}
+
+// priorityAt is the priority a notification goes out with at the given time,
+// after the profile's quiet hours.
+func (s *ProfileSettings) priorityAt(priority int, at time.Time) int {
+	return s.Quiet.priority(priority, at.In(locationOf(s.TimeZone)))
+}
+
 func (s *ProfileSettings) clone() *ProfileSettings {
 	c := *s
 	c.Types = maps.Clone(s.Types)
+	c.EpisodeReasons = slices.Clone(s.EpisodeReasons)
 	return &c
 }
 

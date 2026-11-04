@@ -39,6 +39,11 @@ type Plugin struct {
 	fetch    *http.Client // poster downloads
 	// handled records the events already sent or permanently rejected.
 	handled *eventLog
+	// pending holds new episodes waiting to be sent as one group; flushMu keeps
+	// one flush pass at a time in this process and flushEvery paces them.
+	pending    *pendingStore
+	flushMu    sync.Mutex
+	flushEvery time.Duration
 
 	cfgMu sync.RWMutex
 	cfg   adminConfig
@@ -107,6 +112,8 @@ func newPlugin(logger *slog.Logger, state stateBackend) *Plugin {
 		commands:          newSessionCommander(),
 		fetch:             &http.Client{Timeout: defaultPosterTimeout},
 		handled:           newEventLog(state),
+		pending:           newPendingStore(state, logger),
+		flushEvery:        flushEvery,
 		hostInfoFn:        sdkHostInfo,
 		resolveImagesFn:   sdkResolveImages,
 		listLibrariesFn:   sdkListLibraries,
@@ -224,6 +231,9 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil)).With("plugin", manifest.GetPluginId())
 	plugin := newPlugin(logger, hostStateBackend{})
+	// Sends grouped new-episode notifications when their window ends: once now,
+	// then on a timer. Until the host connection is bound a pass just waits.
+	go plugin.runFlusher(context.Background())
 
 	// ServeManifestWithOptions answers GetManifest and BindHostBroker itself
 	// and, because the manifest declares configuration_check, refuses to start

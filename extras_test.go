@@ -492,9 +492,9 @@ func TestDigestOnlyInTheAdminsChosenHour(t *testing.T) {
 	h.serveDigest(t)
 	sunday := time.Date(2026, 11, 8, 18, 0, 0, 0, time.UTC)
 
-	// Every hour of the week but one: no digest and no Silo reads. This is
+	// Outside the hour and its catch-up: no digest and no Silo reads. This is
 	// what a restart or the hourly task does at any other time.
-	for _, now := range []time.Time{testNow, sunday.Add(-time.Hour), sunday.Add(time.Hour), sunday.Add(-24 * time.Hour)} {
+	for _, now := range []time.Time{testNow, sunday.Add(-time.Hour), sunday.Add(7 * time.Hour), sunday.Add(-24 * time.Hour)} {
 		h.clock(now)
 		out := h.mustRun(t, capWeeklyDigest)
 		if !strings.HasPrefix(out["status"].(string), "skipped") {
@@ -520,6 +520,79 @@ func TestDigestOnlyInTheAdminsChosenHour(t *testing.T) {
 	h.mustRun(t, capWeeklyDigest)
 	if n := len(h.pushover.messages()); n != 2 {
 		t.Fatalf("the next week: %d digests in all", n)
+	}
+}
+
+// A week's digest isn't lost when no run lands in the chosen hour (Silo down or
+// restarting then): a later run up to 6 hours after sends it, once.
+func TestDigestCatchesUpAfterAMissedHour(t *testing.T) {
+	sunday := time.Date(2026, 11, 8, 18, 0, 0, 0, time.UTC) // the chosen hour (default Sunday 18:00)
+	// The chosen hour's own run never happened. The first run after it is at
+	// 00:25 on Monday, in the last hour of the catch-up and already in the next
+	// ISO week.
+	h := newHarness(t)
+	h.optInAdmin(t, 7, "p1", testUserKey, and(onlyAlerts(alertDigest), func(a *AdminSettings) { a.Digest = nil }))
+	h.serveDigest(t)
+	h.clock(sunday.Add(6*time.Hour + 25*time.Minute)) // 00:25 Monday: hour 6 after the chosen one
+	if out := h.mustRun(t, capWeeklyDigest); out["digests_sent"] != float64(1) {
+		t.Fatalf("a run 6h25m after the chosen hour: %v", out)
+	}
+	// Later runs the same week, in and past the catch-up, send nothing more,
+	// even though Monday is already the next ISO week.
+	for _, d := range []time.Duration{6*time.Hour + 55*time.Minute, 5 * time.Hour, 7 * time.Hour, 24 * time.Hour} {
+		h.clock(sunday.Add(d))
+		h.mustRun(t, capWeeklyDigest)
+	}
+	if n := len(h.pushover.messages()); n != 1 {
+		t.Fatalf("one week sent %d digests", n)
+	}
+
+	// The chosen hour's own run and a catch-up run of the same week send once.
+	h = newHarness(t)
+	h.optInAdmin(t, 7, "p1", testUserKey, and(onlyAlerts(alertDigest), func(a *AdminSettings) { a.Digest = nil }))
+	h.serveDigest(t)
+	h.clock(sunday.Add(10 * time.Minute))
+	h.mustRun(t, capWeeklyDigest)
+	h.clock(sunday.Add(3*time.Hour + 10*time.Minute))
+	h.mustRun(t, capWeeklyDigest)
+	// A late run after midnight (Monday, the next ISO week) is still the same
+	// digest, not a second one.
+	h.clock(sunday.Add(6*time.Hour + 5*time.Minute))
+	h.mustRun(t, capWeeklyDigest)
+	if n := len(h.pushover.messages()); n != 1 {
+		t.Fatalf("hour run plus catch-up runs sent %d digests", n)
+	}
+	// The next week's hour still sends.
+	h.clock(sunday.Add(7 * 24 * time.Hour))
+	h.mustRun(t, capWeeklyDigest)
+	if n := len(h.pushover.messages()); n != 2 {
+		t.Fatalf("the next week: %d digests in all", n)
+	}
+}
+
+func TestDigestSlotWindow(t *testing.T) {
+	a := defaultAdminSettings()
+	a.TimeZone = "America/New_York"
+	a.Digest = &DigestSchedule{Day: int(time.Sunday), Hour: 22}
+	// Sunday 22:00 New York is Monday 03:00 UTC (EST, UTC-5, after DST ends).
+	slot := time.Date(2026, 11, 9, 3, 0, 0, 0, time.UTC)
+	week := "2026-W45" // Sunday 2026-11-08
+	for _, c := range []struct {
+		at  time.Duration
+		due bool
+	}{
+		{-time.Second, false}, {0, true}, {59 * time.Minute, true}, {3 * time.Hour, true},
+		{6 * time.Hour, true}, {6*time.Hour + 59*time.Minute, true}, {7 * time.Hour, false}, {24 * time.Hour, false},
+	} {
+		got, due := a.digestSlot(slot.Add(c.at))
+		if due != c.due || (due && got != week) {
+			t.Errorf("%v after the chosen hour: due=%v week=%q, want due=%v week=%q", c.at, due, got, c.due, week)
+		}
+	}
+	// 01:00 Monday in New York is after midnight, in the next ISO week, but the
+	// digest is still the Sunday's.
+	if got, due := a.digestSlot(time.Date(2026, 11, 9, 6, 0, 0, 0, time.UTC)); !due || got != week {
+		t.Errorf("after midnight: due=%v week=%q", due, got)
 	}
 }
 

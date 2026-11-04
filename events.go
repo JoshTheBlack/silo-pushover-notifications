@@ -51,6 +51,27 @@ type deliveryFlags struct {
 	Reason           string `json:"reason"`
 }
 
+// has reports whether Silo gave the reason (one of the reason… constants).
+func (f deliveryFlags) has(reason string) bool {
+	switch reason {
+	case reasonFavorite:
+		return f.Favorite
+	case reasonWatchlist:
+		return f.Watchlist
+	case reasonContinueWatching:
+		return f.ContinueWatching
+	case reasonNextUp:
+		return f.NextUp
+	}
+	return false
+}
+
+// reasonLabels name the reasons in messages, in the order they are listed.
+var reasonLabels = []struct{ key, label string }{
+	{reasonFavorite, "Favorite"}, {reasonWatchlist, "Watchlist"},
+	{reasonContinueWatching, "Continue Watching"}, {reasonNextUp, "Next Up"},
+}
+
 type eventServer struct {
 	pluginv1.UnimplementedEventConsumerServer
 	plugin *Plugin
@@ -129,6 +150,14 @@ func (p *Plugin) deliver(ctx context.Context, key string, d delivery) error {
 	if !ts.Enabled {
 		return nil
 	}
+	if typeKey == episodeAvailableKey {
+		var flags deliveryFlags
+		_ = json.Unmarshal(d.ReasonFlags, &flags)
+		if !settings.wantsEpisode(flags) {
+			log.Debug("episode skipped: none of its reasons is one the profile asked for")
+			return nil
+		}
+	}
 
 	handled, err := p.handled.Seen(ctx, key)
 	if err != nil {
@@ -140,8 +169,16 @@ func (p *Plugin) deliver(ctx context.Context, key string, d delivery) error {
 		return nil
 	}
 
+	// A profile that groups season drops holds the episode in state and lets the
+	// flush send it with the others. Writing to state is all that happens here,
+	// so the event is acknowledged well inside its deadline.
+	if window := settings.groupWindow(); window > 0 && typeKey == episodeAvailableKey && seriesKey(d) != "" {
+		return p.holdEpisode(ctx, log, key, d, window)
+	}
+
 	msg := p.buildMessage(ctx, settings, ts, d)
 	msg.Token = token
+	msg.Priority = settings.priorityAt(msg.Priority, p.now())
 	if err := p.pushover.Send(ctx, msg); err != nil {
 		var perr *pushoverError
 		if !errors.As(err, &perr) || perr.Retryable {
@@ -211,11 +248,8 @@ func deliveryVars(d delivery, profileName string) map[string]string {
 	}
 
 	var reasons []string
-	for _, r := range []struct {
-		on    bool
-		label string
-	}{{flags.Favorite, "Favorite"}, {flags.Watchlist, "Watchlist"}, {flags.ContinueWatching, "Continue Watching"}, {flags.NextUp, "Next Up"}} {
-		if r.on {
+	for _, r := range reasonLabels {
+		if flags.has(r.key) {
 			reasons = append(reasons, r.label)
 		}
 	}
@@ -247,11 +281,16 @@ func deliveryVars(d delivery, profileName string) map[string]string {
 }
 
 func (p *Plugin) buildMessage(ctx context.Context, s *ProfileSettings, ts TypeSettings, d delivery) pushoverMessage {
-	vars := deliveryVars(d, s.ProfileName)
+	return p.composeMessage(ctx, s, ts, d, ts.Title, ts.Message, deliveryVars(d, s.ProfileName))
+}
+
+// composeMessage renders a title and message template with vars into the push
+// for a profile, adding what d gives it: the link, the poster and the time.
+func (p *Plugin) composeMessage(ctx context.Context, s *ProfileSettings, ts TypeSettings, d delivery, title, message string, vars map[string]string) pushoverMessage {
 	msg := pushoverMessage{
 		User:      s.UserKey,
-		Title:     renderTemplate(ts.Title, vars, s.HTML),
-		Message:   renderTemplate(ts.Message, vars, s.HTML),
+		Title:     renderTemplate(title, vars, s.HTML),
+		Message:   renderTemplate(message, vars, s.HTML),
 		Device:    s.Device,
 		Sound:     s.Sound,
 		Priority:  s.Priority,

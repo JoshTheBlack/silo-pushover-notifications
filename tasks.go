@@ -874,18 +874,20 @@ func (p *Plugin) runDigest(ctx context.Context, now time.Time) (map[string]any, 
 		return map[string]any{"status": "skipped: no admin has the weekly digest on"}, nil
 	}
 	// Silo runs the task every hour (or once at each start, when it isn't
-	// bound), and can't say which: each admin's digest goes out only in their
-	// chosen hour, in their time zone, and at most once per ISO week of that
-	// time zone.
+	// bound), and can't say which: each admin's digest goes out in their chosen
+	// hour, in their time zone, or in a later run up to digestCatchUp after it
+	// (Silo may have been down in that hour), and at most once per ISO week of
+	// that time zone. The handled ID names the week of the chosen hour, so a
+	// catch-up run that crosses midnight into the next week is still the same
+	// digest.
 	var due []*recipient
 	for _, r := range candidates {
-		if r.admin.digestDue(now) {
-			week := isoWeek(now.In(r.admin.location()))
+		if week, ok := r.admin.digestSlot(now); ok {
 			due = append(due, newRecipient(r.admin, alertDigest, "digest:"+week))
 		}
 	}
 	if len(due) == 0 {
-		return map[string]any{"status": "skipped: no admin's digest is due this hour"}, nil
+		return map[string]any{"status": "skipped: no admin's digest is due now"}, nil
 	}
 	candidates = due
 	base, err := waitForHost(ctx, func() (string, error) { return p.siloBase(ctx) })

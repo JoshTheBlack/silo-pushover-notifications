@@ -337,6 +337,7 @@ func (h *harness) newPlugin(state stateBackend) *Plugin {
 	// Noise control, the tracker and the seen sets prune against the clock;
 	// pin it to the fixtures' evening so the tests don't age.
 	p.taskNow = func() time.Time { return testNow }
+	p.pending.settle = 0
 	p.watch.now = func() time.Time { return testNow }
 	p.seen.now = func() time.Time { return testNow }
 	p.listLibrariesFn = func(context.Context) ([]siloLibrary, error) {

@@ -271,11 +271,107 @@
     }
     draft = JSON.parse(JSON.stringify(view));
     draft.user_key = ""; draft.app_token = ""; draft.clear_app_token = false;
+    normalizeDraft();
     devices = view.device ? view.device.split(",") : [];
     sounds = state.sounds;
     dirty = false;
     renderAll();
     barMessage(view.configured ? "" : "Not set up yet");
+  }
+
+  // Fills in the settings an older save doesn't have: everything off.
+  function normalizeDraft() {
+    draft.episode_reasons = draft.episode_reasons || [];
+    draft.group_minutes = draft.group_minutes || 0;
+    draft.quiet = { enabled: false, start: "22:00", end: "07:00", ...(draft.quiet || {}) };
+    draft.episode_reason_options = draft.episode_reason_options || [];
+    lastGroupMinutes = draft.group_minutes || 5;
+  }
+  let lastGroupMinutes = 5, lastGroupField = null;
+
+  function profileZoneLabel() {
+    return `${browserZone() || draft.time_zone || "UTC"} time, from this browser`;
+  }
+
+  function reasonChecks() {
+    return draft.episode_reason_options.map((o) =>
+      `<label><input type="checkbox" data-reason="${esc(o.value)}"${draft.episode_reasons.includes(o.value) ? " checked" : ""}> ${esc(o.label)}</label>`).join("");
+  }
+
+  // The grouped wording only exists for types that can be merged (new episodes).
+  function groupType() { return state.types.find((t) => t.default_group_title); }
+
+  function renderGroupWording() {
+    const t = groupType();
+    if (!t) return "";
+    const ts = draft.types[t.key];
+    return `
+      <details id="grpWording">
+        <summary>Customize grouped wording</summary>
+        <div class="editor">
+          <div class="field"><label class="lbl" for="grp_title">Title</label>
+            <input type="text" id="grp_title" value="${esc(ts.group_title)}"></div>
+          <div class="field"><label class="lbl" for="grp_message">Message</label>
+            <textarea id="grp_message" rows="3">${esc(ts.group_message)}</textarea>
+            <div class="chips" aria-label="Insert a placeholder">${t.group_placeholders.map((p) => `<button class="chip" type="button" data-ginsert="{${esc(p)}}">{${esc(p)}}</button>`).join("")}</div>
+          </div>
+          <div class="help">Priority and sound follow the "${esc(t.label)}" settings below. If only one episode arrives in the window it is sent the ordinary way, with that wording.</div>
+          <div class="preview" aria-live="polite"><div class="pl">Preview with sample data</div><div class="pt"></div><div class="pm"></div></div>
+          <div class="actions">
+            <button class="btn" type="button" id="grpTest">Send test</button>
+            <button class="link" type="button" id="grpReset">Reset wording</button>
+            <span class="help" id="grpTestMsg" role="status" aria-live="polite"></span>
+          </div>
+        </div>
+      </details>`;
+  }
+
+  function updateGroupPreview() {
+    const t = groupType();
+    const box = $("#grpWording");
+    if (!t || !box) return;
+    const ts = draft.types[t.key];
+    const p = state.profiles.find((x) => x.id === profileId);
+    const vars = { profile: p ? p.name : "", type: t.key, type_label: t.label, ...t.group_sample };
+    $(".pt", box).textContent = render(ts.group_title, vars) || "(no title)";
+    $(".pm", box).textContent = render(ts.group_message, vars) || "(no message)";
+  }
+
+  function renderEpisodeCard() {
+    const on = draft.group_minutes > 0;
+    return `
+      <section class="card">
+        <h2>New episodes</h2>
+        <p class="sub">Choose which new episodes reach you, and whether several episodes of one show arrive as a single notification.</p>
+        <fieldset class="field">
+          <legend class="lbl">Only tell me about episodes that are in my</legend>
+          <div class="pick inline">${reasonChecks()}</div>
+          <div class="help">Leave all unticked to hear about every new episode. With any ticked, an episode is sent only when Silo gives at least one of those reasons for it.</div>
+        </fieldset>
+        <div class="checks" style="margin:12px 0 4px">
+          <label class="switch"><input type="checkbox" id="groupOn"${on ? " checked" : ""}>
+            <span><span class="t">Group a season drop into one notification</span><br><span class="d">When a show's first new episode arrives, wait a few minutes for the rest and send one notification such as "Severance: 3 new episodes (S02E01 to S02E03)". Off: every episode is sent as it arrives.</span></span></label>
+        </div>
+        <div class="field" id="groupField"${on ? "" : " hidden"} style="margin-left:50px">
+          <label class="lbl" for="groupMinutes">Wait for more episodes (minutes)</label>
+          <input type="number" class="narrow" id="groupMinutes" min="1" max="120" step="1" inputmode="numeric" value="${esc(on ? draft.group_minutes : "")}">
+          <div class="help">Counted from the first episode of that show. A notification is sent when the time is up, so it can arrive up to half a minute later.</div>
+        </div>
+        ${renderGroupWording()}
+      </section>
+      <section class="card">
+        <h2>Quiet hours</h2>
+        <p class="sub">Between the times below this profile's notifications go out at low priority: no sound or vibration. They still arrive and wait in the Pushover app.</p>
+        <div class="checks" style="margin:12px 0 4px">
+          <label class="switch"><input type="checkbox" id="pqOn"${draft.quiet.enabled ? " checked" : ""}>
+            <span><span class="t">Turn this profile's notifications down at night</span><br><span class="d">Applies to every notification below, including ones set to high priority. The time zone is read from this browser and saved with your settings.</span></span></label>
+        </div>
+        <div class="times">
+          <label for="pqStart">From</label><input type="time" id="pqStart" value="${esc(draft.quiet.start)}">
+          <label for="pqEnd">until</label><input type="time" id="pqEnd" value="${esc(draft.quiet.end)}">
+          <span class="muted">${esc(profileZoneLabel())}</span>
+        </div>
+      </section>`;
   }
 
   function renderTabs() {
@@ -346,6 +442,7 @@
             <span><span class="t">Allow HTML in messages</span><br><span class="d">Lets your templates use &lt;b&gt;, &lt;i&gt;, &lt;u&gt;, &lt;font color&gt; and &lt;a&gt;.</span></span></label>
         </div>
       </section>
+      ${renderEpisodeCard()}
       <section class="card">
         <h2>Notifications</h2>
         <p class="sub">Choose what to receive and how each one reads. Which episodes count as new follows your New Episode Notifications settings in Silo.</p>
@@ -356,6 +453,7 @@
     $("#removeBtn").hidden = !view.configured;
     bind();
     state.types.forEach(updatePreview);
+    updateGroupPreview();
   }
 
   function renderType(t) {
@@ -418,6 +516,26 @@
     on("#includeLink", "change", (e) => { draft.include_link = e.target.checked; markDirty(); });
     on("#attachPoster", "change", (e) => { draft.attach_poster = e.target.checked; markDirty(); });
     on("#html", "change", (e) => { draft.html = e.target.checked; markDirty(); });
+    $$("#app [data-reason]").forEach((c) => c.addEventListener("change", () => {
+      draft.episode_reasons = draft.episode_reasons.filter((v) => v !== c.dataset.reason);
+      if (c.checked) draft.episode_reasons.push(c.dataset.reason);
+      markDirty();
+    }));
+    on("#groupOn", "change", (e) => {
+      draft.group_minutes = e.target.checked ? lastGroupMinutes || 5 : 0;
+      $("#groupField").hidden = !e.target.checked;
+      $("#groupMinutes").value = e.target.checked ? draft.group_minutes : "";
+      markDirty();
+    });
+    on("#groupMinutes", "input", (e) => {
+      draft.group_minutes = e.target.value === "" ? 0 : Math.round(Number(e.target.value));
+      if (draft.group_minutes > 0) lastGroupMinutes = draft.group_minutes;
+      markDirty();
+    });
+    on("#pqOn", "change", (e) => { draft.quiet.enabled = e.target.checked; markDirty(); });
+    on("#pqStart", "input", (e) => { draft.quiet.start = e.target.value; markDirty(); });
+    on("#pqEnd", "input", (e) => { draft.quiet.end = e.target.value; markDirty(); });
+    bindGroupWording();
     on("#clearToken", "click", (e) => {
       draft.clear_app_token = !draft.clear_app_token;
       e.target.textContent = draft.clear_app_token ? "Keep my saved token" : "Remove my saved token";
@@ -459,12 +577,53 @@
     });
   }
 
+  function bindGroupWording() {
+    const t = groupType();
+    const box = $("#grpWording");
+    if (!t || !box) return;
+    const ts = draft.types[t.key];
+    const title = $("#grp_title"), message = $("#grp_message");
+    [[title, "group_title"], [message, "group_message"]].forEach(([input, k]) => {
+      input.addEventListener("input", () => { ts[k] = input.value; markDirty(); updateGroupPreview(); });
+      input.addEventListener("focus", () => (lastGroupField = input));
+    });
+    $$("[data-ginsert]", box).forEach((chip) => chip.addEventListener("click", () => {
+      const target = lastGroupField && box.contains(lastGroupField) ? lastGroupField : message;
+      const s = target.selectionStart ?? target.value.length, e = target.selectionEnd ?? s;
+      target.value = target.value.slice(0, s) + chip.dataset.ginsert + target.value.slice(e);
+      target.focus();
+      target.setSelectionRange(s + chip.dataset.ginsert.length, s + chip.dataset.ginsert.length);
+      target.dispatchEvent(new Event("input"));
+    }));
+    $("#grpReset").addEventListener("click", () => {
+      ts.group_title = t.default_group_title; ts.group_message = t.default_group_message;
+      title.value = ts.group_title; message.value = ts.group_message;
+      markDirty();
+      updateGroupPreview();
+    });
+    $("#grpTest").addEventListener("click", async (e) => {
+      const btn = e.target, out = $("#grpTestMsg");
+      btn.disabled = true;
+      out.className = "help"; out.textContent = "Sending…";
+      try {
+        await api(`api/profiles/${encodeURIComponent(profileId)}/test`, "POST", { settings: payload(), type: t.key, group: true });
+        out.className = "help status-ok"; out.textContent = "Sent. Check your device.";
+      } catch (err) {
+        if (!expired) { out.className = "help status-err"; out.textContent = err.message; }
+      } finally {
+        btn.disabled = expired;
+      }
+    });
+  }
+
   function payload() {
     return {
       enabled: draft.enabled, user_key: draft.user_key, app_token: draft.app_token,
       clear_app_token: draft.clear_app_token, device: draft.device, sound: draft.sound,
       priority: draft.priority, html: draft.html, attach_poster: draft.attach_poster,
       include_link: draft.include_link, types: draft.types,
+      episode_reasons: draft.episode_reasons, group_minutes: draft.group_minutes,
+      quiet: draft.quiet, time_zone: browserZone(),
     };
   }
 
@@ -515,6 +674,7 @@
       view = res.profile;
       draft = JSON.parse(JSON.stringify(view));
       draft.user_key = ""; draft.app_token = ""; draft.clear_app_token = false;
+      normalizeDraft();
       dirty = false;
       renderAll();
       if (res.warning) barMessage(res.warning, "err"); else barMessage("Saved", "ok");
@@ -834,7 +994,7 @@
       <p class="help">The switches below say who gets the alerts. Silo only runs the checks when you give them a schedule, and the plugin can't do that for you. Once, as the server admin:</p>
       <ol class="help">
         <li>Open <strong>Admin &gt; Plugins</strong> and open <strong>Pushover Notifications</strong>.</li>
-        <li>Under its scheduled tasks, switch on <strong>Pushover server health check</strong> and set it to run every 5 minutes, and <strong>Pushover weekly digest</strong> set to run <strong>every 1 hour</strong>, not weekly. Each admin picks their own digest day and hour below, and a run sends a digest only in that hour, so an hourly schedule is what lets every admin's choice work.</li>
+        <li>Under its scheduled tasks, switch on <strong>Pushover server health check</strong> and set it to run every 5 minutes, and <strong>Pushover weekly digest</strong> set to run <strong>every 1 hour</strong>, not weekly. Each admin picks their own digest day and hour below, and a run sends a digest in that hour, or in a later run within 6 hours after it (so a week isn't lost if Silo was down), so an hourly schedule is what lets every admin's choice work.</li>
         <li><strong>Restart Silo.</strong> A change to a task's schedule only takes effect after a restart, and Silo says when one is needed.</li>
       </ol>
       <p class="help">Or do it with the API, using an admin API key (replace <code>ID</code> with this plugin's installation number from Admin &gt; Plugins):</p>
@@ -843,14 +1003,15 @@
 
 PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
 {"enabled": true, "trigger": {"type": "interval", "interval_ms": 3600000}}</pre>
-      <p class="help">Until a task has a schedule, Silo runs it once each time it starts (a digest goes out then only if the restart falls in an admin's chosen hour, and never more than once a week). Both tasks need the read-only Silo key, and each admin switches the alerts on for themselves here. A health check tells you about a problem once, then again when it's fixed.</p>
+      <p class="help">Until a task has a schedule, Silo runs it once each time it starts (a digest goes out then only if the restart falls within 6 hours after an admin's chosen hour, and never more than once a week). Both tasks need the read-only Silo key, and each admin switches the alerts on for themselves here. A health check tells you about a problem once, then again when it's fixed.</p>
     </details>`;
   }
 
   const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
   // When the weekly digest goes out: the admin's day and hour, in their time
-  // zone. The scheduled task runs hourly and sends only in that hour.
+  // zone. The scheduled task runs hourly and sends in that hour or, if that
+  // run was missed, in a later one within 6 hours.
   function digestRow(id) {
     const d = adminDraft.digest;
     const hours = Array.from({ length: 24 }, (_, h) => `<option value="${h}"${h === d.hour ? " selected" : ""}>${String(h).padStart(2, "0")}:00</option>`).join("");

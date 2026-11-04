@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -349,13 +351,24 @@ type profileView struct {
 	AttachPoster bool                    `json:"attach_poster"`
 	IncludeLink  bool                    `json:"include_link"`
 	Types        map[string]TypeSettings `json:"types"`
+	// EpisodeReasons is the reason filter for new episodes (empty: all),
+	// GroupMinutes the season-drop window (0: off), and Quiet the profile's
+	// quiet hours, in the time zone the browser last reported.
+	EpisodeReasons []string   `json:"episode_reasons"`
+	GroupMinutes   int        `json:"group_minutes"`
+	Quiet          QuietHours `json:"quiet"`
+	TimeZone       string     `json:"time_zone"`
+	// EpisodeReasonOptions lists the reasons the filter offers.
+	EpisodeReasonOptions []option `json:"episode_reason_options"`
 }
 
 func newProfileView(prof siloProfile, s *ProfileSettings) profileView {
 	view := profileView{
 		ProfileID: prof.ID, ProfileName: prof.Name,
 		Enabled: true, AttachPoster: true, IncludeLink: true,
-		Types: map[string]TypeSettings{},
+		Types:          map[string]TypeSettings{},
+		EpisodeReasons: []string{}, Quiet: QuietHours{Start: defaultQuietStart, End: defaultQuietEnd},
+		EpisodeReasonOptions: episodeReasonOptions,
 	}
 	if s != nil {
 		view.Configured = true
@@ -364,13 +377,24 @@ func newProfileView(prof siloProfile, s *ProfileSettings) profileView {
 		view.AppTokenHint = keyHint(s.AppToken)
 		view.Device, view.Sound, view.Priority = s.Device, s.Sound, s.Priority
 		view.HTML, view.AttachPoster, view.IncludeLink = s.HTML, s.AttachPoster, s.IncludeLink
+		if len(s.EpisodeReasons) > 0 {
+			view.EpisodeReasons = s.EpisodeReasons
+		}
+		view.GroupMinutes, view.TimeZone = s.GroupMinutes, s.TimeZone
+		if s.Quiet != (QuietHours{}) {
+			view.Quiet = s.Quiet
+		}
 	}
 	for _, t := range notificationTypes {
+		ts := t.defaults()
 		if s != nil {
-			view.Types[t.Key] = s.typeSettings(t.Key)
-		} else {
-			view.Types[t.Key] = t.defaults()
+			ts = s.typeSettings(t.Key)
 		}
+		if t.groupable() {
+			// Show the wording a merged notification will use.
+			ts.GroupTitle, ts.GroupMessage = ts.groupWording(t)
+		}
+		view.Types[t.Key] = ts
 	}
 	return view
 }
@@ -403,6 +427,12 @@ type profileInput struct {
 	AttachPoster  bool                    `json:"attach_poster"`
 	IncludeLink   bool                    `json:"include_link"`
 	Types         map[string]TypeSettings `json:"types"`
+	// EpisodeReasons, GroupMinutes, TimeZone and Quiet are the 0.3.0 settings.
+	// An empty TimeZone (a browser that can't say) keeps the saved one.
+	EpisodeReasons []string   `json:"episode_reasons"`
+	GroupMinutes   int        `json:"group_minutes"`
+	TimeZone       string     `json:"time_zone"`
+	Quiet          QuietHours `json:"quiet"`
 }
 
 // applyInput merges input over the stored settings and validates the result.
@@ -445,6 +475,43 @@ func (p *Plugin) applyInput(v *viewer, prof siloProfile, existing *ProfileSettin
 		return nil, bad("Priority must be between -2 and 1.")
 	}
 
+	s.EpisodeReasons = nil
+	for _, r := range in.EpisodeReasons {
+		r = strings.TrimSpace(r)
+		if !slices.ContainsFunc(episodeReasonOptions, func(o option) bool { return o.Value == r }) {
+			return nil, bad("That isn't a reason Silo gives for a new episode.")
+		}
+		if !slices.Contains(s.EpisodeReasons, r) {
+			s.EpisodeReasons = append(s.EpisodeReasons, r)
+		}
+	}
+	// Keep the page's order so the same choice always stores the same way.
+	slices.SortFunc(s.EpisodeReasons, func(a, b string) int {
+		return cmp.Compare(slices.IndexFunc(episodeReasonOptions, func(o option) bool { return o.Value == a }),
+			slices.IndexFunc(episodeReasonOptions, func(o option) bool { return o.Value == b }))
+	})
+	if in.GroupMinutes != 0 && (in.GroupMinutes < minGroupMinutes || in.GroupMinutes > maxGroupMinutes) {
+		return nil, bad(fmt.Sprintf("Grouping: hold new episodes for between %d and %d minutes, or switch it off.", minGroupMinutes, maxGroupMinutes))
+	}
+	s.GroupMinutes = in.GroupMinutes
+	tz, aerr := cleanTimeZone(in.TimeZone)
+	if aerr != nil {
+		return nil, aerr
+	}
+	if tz != "" {
+		s.TimeZone = tz
+	}
+	q, aerr := cleanQuiet(in.Quiet)
+	if aerr != nil {
+		return nil, aerr
+	}
+	// Quiet hours nobody has touched (off, with the default times) stay unset,
+	// so the saved settings of a profile that doesn't use them don't change.
+	if q.Enabled || s.Quiet != (QuietHours{}) || q.Start != defaultQuietStart || q.End != defaultQuietEnd {
+		s.Quiet = q
+		s.Quiet.SilenceEmergency = false // profiles have no emergency priority
+	}
+
 	s.Types = map[string]TypeSettings{}
 	for _, t := range notificationTypes {
 		ts, ok := in.Types[t.Key]
@@ -452,8 +519,12 @@ func (p *Plugin) applyInput(v *viewer, prof siloProfile, existing *ProfileSettin
 			ts = t.defaults()
 		}
 		ts.Title, ts.Message, ts.Sound = strings.TrimSpace(ts.Title), strings.TrimSpace(ts.Message), strings.TrimSpace(ts.Sound)
+		ts.GroupTitle, ts.GroupMessage = strings.TrimSpace(ts.GroupTitle), strings.TrimSpace(ts.GroupMessage)
+		if !t.groupable() {
+			ts.GroupTitle, ts.GroupMessage = "", ""
+		}
 		switch {
-		case len(ts.Title) > 1024 || len(ts.Message) > 2048:
+		case len(ts.Title) > 1024 || len(ts.Message) > 2048 || len(ts.GroupTitle) > 1024 || len(ts.GroupMessage) > 2048:
 			return nil, bad(t.Label + ": the template is too long.")
 		case ts.Priority != nil && !validPriority(*ts.Priority):
 			return nil, bad(t.Label + ": priority must be between -2 and 1.")
@@ -462,6 +533,11 @@ func (p *Plugin) applyInput(v *viewer, prof siloProfile, existing *ProfileSettin
 		}
 		if ts.Title == "" && ts.Message == "" {
 			ts.Title, ts.Message = t.DefaultTitle, t.DefaultMessage
+		}
+		if ts.GroupTitle == "" && ts.GroupMessage == "" || ts.GroupTitle == t.DefaultGroupTitle && ts.GroupMessage == t.DefaultGroupMessage {
+			// Unchanged wording stays unset, so a later change to the default
+			// reaches the profile.
+			ts.GroupTitle, ts.GroupMessage = "", ""
 		}
 		s.Types[t.Key] = ts
 	}
@@ -509,6 +585,8 @@ func (p *Plugin) handlePutProfile(ctx context.Context, v *viewer, prof siloProfi
 type testInput struct {
 	Settings profileInput `json:"settings"`
 	Type     string       `json:"type"`
+	// Group tests the wording of a merged notification instead.
+	Group bool `json:"group"`
 }
 
 // handleTest sends a sample of one notification type using the unsaved form
@@ -530,14 +608,20 @@ func (p *Plugin) handleTest(ctx context.Context, v *viewer, prof siloProfile, bo
 	t := notificationTypeByKey(in.Type)
 	ts := s.typeSettings(t.Key)
 	vars := map[string]string{"profile": s.ProfileName, "type": t.Key, "type_label": t.Label}
-	for k, val := range t.Sample {
+	sample := t.Sample
+	title, message := ts.Title, ts.Message
+	if in.Group && t.groupable() {
+		sample = t.GroupSample
+		title, message = ts.groupWording(t)
+	}
+	for k, val := range sample {
 		vars[k] = val
 	}
 	msg := pushoverMessage{
 		Token:    effectiveToken(s, p.config()),
 		User:     s.UserKey,
-		Title:    "[Test] " + renderTemplate(ts.Title, vars, s.HTML),
-		Message:  renderTemplate(ts.Message, vars, s.HTML),
+		Title:    "[Test] " + renderTemplate(title, vars, s.HTML),
+		Message:  renderTemplate(message, vars, s.HTML),
 		Device:   s.Device,
 		Sound:    s.Sound,
 		Priority: s.Priority,

@@ -20,7 +20,18 @@ type notificationType struct {
 	Placeholders   []string `json:"placeholders"`
 	// Sample fills the placeholders for previews and test sends.
 	Sample map[string]string `json:"sample"`
+
+	// The group fields are for types whose deliveries can be merged into one
+	// push (a season drop): the wording of the merged push, its placeholders
+	// and sample values. Empty for the others.
+	DefaultGroupTitle   string            `json:"default_group_title,omitempty"`
+	DefaultGroupMessage string            `json:"default_group_message,omitempty"`
+	GroupPlaceholders   []string          `json:"group_placeholders,omitempty"`
+	GroupSample         map[string]string `json:"group_sample,omitempty"`
 }
+
+// groupable reports whether deliveries of the type can be merged.
+func (t notificationType) groupable() bool { return t.DefaultGroupTitle != "" }
 
 func (t notificationType) defaults() TypeSettings {
 	return TypeSettings{Enabled: t.DefaultEnabled, Title: t.DefaultTitle, Message: t.DefaultMessage}
@@ -47,6 +58,14 @@ var notificationTypes = []notificationType{
 		Sample: map[string]string{
 			"series": "Severance", "episode_title": "Hello, Ms. Cobel", "season": "2", "episode": "1",
 			"sxe": "S02E01", "reasons": "Watchlist, Next Up",
+		},
+		DefaultGroupTitle:   "{series}: {count} new episodes ({range})",
+		DefaultGroupMessage: "{episodes}",
+		GroupPlaceholders:   append([]string{"series", "count", "range", "first", "last", "episodes", "reasons"}, commonPlaceholders...),
+		GroupSample: map[string]string{
+			"series": "Severance", "count": "3", "range": "S02E01 to S02E03", "first": "S02E01", "last": "S02E03",
+			"episodes": "S02E01 · Hello, Ms. Cobel\nS02E02 · Goodbye, Mrs. Selvig\nS02E03 · Who Is Alive?",
+			"reasons":  "Watchlist, Next Up",
 		},
 	},
 	{

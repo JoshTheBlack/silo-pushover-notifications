@@ -92,6 +92,68 @@ func (q QuietHours) active(t time.Time) bool {
 	return m >= start || m < end // crosses midnight
 }
 
+// priority is the priority a message goes out with at local, a time already in
+// the owner's time zone: quiet hours bring anything louder than -1 down to -1,
+// except an emergency alert unless SilenceEmergency is on too. Admin alerts and
+// every profile's notifications share this.
+func (q QuietHours) priority(priority int, local time.Time) int {
+	if !q.active(local) {
+		return priority
+	}
+	if priority >= priorityEmergency && !q.SilenceEmergency {
+		return priority
+	}
+	return min(priority, -1)
+}
+
+// locationOf is the time zone named by an IANA name as a browser reports it,
+// UTC when it is empty or unknown.
+func locationOf(tz string) *time.Location {
+	if tz != "" {
+		if loc, err := time.LoadLocation(tz); err == nil {
+			return loc
+		}
+	}
+	return time.UTC
+}
+
+// cleanTimeZone checks a time zone from the browser. Empty is allowed and
+// means "keep the saved one" to the caller.
+func cleanTimeZone(tz string) (string, *apiError) {
+	tz = strings.TrimSpace(tz)
+	if tz == "" {
+		return "", nil
+	}
+	if len(tz) > 64 || tz == "Local" {
+		return "", apiErr(http.StatusUnprocessableEntity, "invalid", "That time zone isn't valid.")
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return "", apiErr(http.StatusUnprocessableEntity, "invalid", "That time zone isn't valid.")
+	}
+	return tz, nil
+}
+
+// cleanQuiet checks quiet hours from the page and fills in the default times.
+func cleanQuiet(q QuietHours) (QuietHours, *apiError) {
+	bad := func(msg string) *apiError { return apiErr(http.StatusUnprocessableEntity, "invalid", msg) }
+	q.Start, q.End = strings.TrimSpace(q.Start), strings.TrimSpace(q.End)
+	if q.Start == "" {
+		q.Start = defaultQuietStart
+	}
+	if q.End == "" {
+		q.End = defaultQuietEnd
+	}
+	start, ok1 := clockMinutes(q.Start)
+	end, ok2 := clockMinutes(q.End)
+	switch {
+	case !ok1 || !ok2:
+		return q, bad("Quiet hours: enter the start and end as times of day.")
+	case q.Enabled && start == end:
+		return q, bad("Quiet hours: the start and end can't be the same time.")
+	}
+	return q, nil
+}
+
 // DigestSchedule is the weekday (0 = Sunday) and hour (0 to 23) an admin gets
 // the weekly digest, in their time zone.
 type DigestSchedule struct {
@@ -113,33 +175,39 @@ func (s *AdminSettings) digestSchedule() DigestSchedule {
 func (s *AdminSettings) siloLink() bool { return s.SiloLink == nil || *s.SiloLink }
 
 // location is the admin's time zone, UTC when unset or unknown.
-func (s *AdminSettings) location() *time.Location {
-	if s.TimeZone != "" {
-		if loc, err := time.LoadLocation(s.TimeZone); err == nil {
-			return loc
-		}
-	}
-	return time.UTC
-}
+func (s *AdminSettings) location() *time.Location { return locationOf(s.TimeZone) }
 
-// digestDue reports whether now falls in the admin's chosen digest hour.
-func (s *AdminSettings) digestDue(now time.Time) bool {
+// digestCatchUp is how long after the chosen hour a run still sends the digest,
+// so a week isn't lost when Silo was down or restarting during that hour.
+const digestCatchUp = 6 * time.Hour
+
+// digestSlot reports whether a run at now should send the admin's digest, and
+// for which week. A run sends it in the chosen hour, or in any later run up to
+// digestCatchUp after that hour. The week is the ISO week (in the admin's time
+// zone) the chosen hour falls in, not the week of the run: a catch-up run after
+// midnight on a Sunday evening digest belongs to the same digest, so the
+// handled log sends it once.
+func (s *AdminSettings) digestSlot(now time.Time) (week string, due bool) {
 	d := s.digestSchedule()
-	local := now.In(s.location())
-	return int(local.Weekday()) == d.Day && local.Hour() == d.Hour
+	loc := s.location()
+	local := now.In(loc)
+	back := (int(local.Weekday()) - d.Day + 7) % 7
+	slot := time.Date(local.Year(), local.Month(), local.Day()-back, d.Hour, 0, 0, 0, loc)
+	if slot.After(local) {
+		// Today is the chosen day but the hour hasn't come: the last one was a
+		// week ago, long past the catch-up.
+		slot = time.Date(local.Year(), local.Month(), local.Day()-back-7, d.Hour, 0, 0, 0, loc)
+	}
+	if local.Sub(slot) >= time.Hour+digestCatchUp {
+		return "", false
+	}
+	return isoWeek(slot), true
 }
 
-// priorityAt is the priority an alert goes out with at the given time: quiet
-// hours bring anything louder than -1 down to -1, except an emergency alert
-// unless the admin silenced those too.
+// priorityAt is the priority an alert goes out with at the given time, after
+// the admin's quiet hours.
 func (s *AdminSettings) priorityAt(priority int, at time.Time) int {
-	if !s.Quiet.active(at.In(s.location())) {
-		return priority
-	}
-	if priority >= priorityEmergency && !s.Quiet.SilenceEmergency {
-		return priority
-	}
-	return min(priority, -1)
+	return s.Quiet.priority(priority, at.In(s.location()))
 }
 
 // AlertSettings controls one admin alert type. All are off by default.
@@ -418,32 +486,15 @@ func applyAdminInput(userID int, profileID, username string, in adminInput) (*Ad
 		s.Noise.WindowMinutes = in.Noise.WindowMinutes
 	}
 
-	tz := strings.TrimSpace(in.TimeZone)
-	if tz != "" {
-		if len(tz) > 64 || tz == "Local" {
-			return nil, bad("That time zone isn't valid.")
-		}
-		if _, err := time.LoadLocation(tz); err != nil {
-			return nil, bad("That time zone isn't valid.")
-		}
+	tz, aerr := cleanTimeZone(in.TimeZone)
+	if aerr != nil {
+		return nil, aerr
 	}
 	s.TimeZone = tz
 
-	q := in.Quiet
-	q.Start, q.End = strings.TrimSpace(q.Start), strings.TrimSpace(q.End)
-	if q.Start == "" {
-		q.Start = defaultQuietStart
-	}
-	if q.End == "" {
-		q.End = defaultQuietEnd
-	}
-	start, ok1 := clockMinutes(q.Start)
-	end, ok2 := clockMinutes(q.End)
-	switch {
-	case !ok1 || !ok2:
-		return nil, bad("Quiet hours: enter the start and end as times of day.")
-	case q.Enabled && start == end:
-		return nil, bad("Quiet hours: the start and end can't be the same time.")
+	q, aerr := cleanQuiet(in.Quiet)
+	if aerr != nil {
+		return nil, aerr
 	}
 	s.Quiet = q
 
