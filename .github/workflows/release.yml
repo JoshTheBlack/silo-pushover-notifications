@@ -1,0 +1,58 @@
+# Builds a release when a version tag (v1.2.3) is pushed. The tag must match
+# manifest.json's version. The release is created as a draft: check it, then
+# publish it on GitHub. Publishing makes it the "latest" release, which is what
+# Silo's catalog URL points at, so servers only see it once it's published:
+#
+#   https://github.com/<owner>/<repo>/releases/latest/download/catalog.json
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check the tag matches manifest.json
+        run: |
+          version="$(jq -r .version manifest.json)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match manifest.json version $version"
+            exit 1
+          fi
+
+      - name: Test
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; echo "::error::run gofmt"; exit 1; }
+          go vet ./...
+          go test ./...
+
+      - name: Build
+        run: >
+          go run ./scripts/package -out dist
+          -release-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          -repo-url "https://github.com/$GITHUB_REPOSITORY"
+
+      - name: Check a binary reports its manifest
+        run: |
+          chmod +x dist/release/plugin-linux-amd64
+          dist/release/plugin-linux-amd64 manifest | jq -e --arg v "${GITHUB_REF_NAME#v}" '.version == $v'
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag
+          --title "$GITHUB_REF_NAME" --generate-notes
+          dist/release/catalog.json dist/release/checksums.txt dist/release/plugin-*
+          dist/*.zip dist/SHA256SUMS.txt

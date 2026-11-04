@@ -5,6 +5,13 @@
 //	dist/binaries/silo-pushover-notifications_<version>_<os>_<arch>   the bare binary
 //	dist/SHA256SUMS.txt
 //
+// With -release-url (the GitHub release's download folder) it also writes the
+// assets for a catalog install into dist/release/:
+//
+//	plugin-<os>-<arch>   the bare binary, as Silo's own catalog names them
+//	checksums.txt        their SHA-256 sums
+//	catalog.json         a one-plugin Silo catalog listing those binaries
+//
 // Run from the repository root: go run ./scripts/package
 //
 // A zip must hold exactly "manifest.json" and "plugin" at its root, and the
@@ -29,7 +36,9 @@ import (
 	"sort"
 	"strings"
 
+	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
 	publicmanifest "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/manifest"
+	"google.golang.org/protobuf/proto"
 )
 
 func main() {
@@ -38,6 +47,8 @@ func main() {
 	manifestPath := flag.String("manifest", "manifest.json", "manifest to package")
 	pkg := flag.String("pkg", ".", "Go package to build")
 	verify := flag.String("verify", "", "only check this zip (os_arch taken from its name) and exit")
+	releaseURL := flag.String("release-url", "", "release download folder, e.g. https://github.com/OWNER/REPO/releases/download/v1.2.3; writes dist/release/")
+	repoURL := flag.String("repo-url", "https://github.com/joshtheblack/silo-pushover-notifications", "source repository listed in the catalog")
 	flag.Parse()
 	if *verify != "" {
 		base := strings.TrimSuffix(filepath.Base(*verify), ".zip")
@@ -54,13 +65,13 @@ func main() {
 		fmt.Println("ok", *verify)
 		return
 	}
-	if err := run(*out, *targets, *manifestPath, *pkg); err != nil {
+	if err := run(*out, *targets, *manifestPath, *pkg, *releaseURL, *repoURL); err != nil {
 		fmt.Fprintln(os.Stderr, "package:", err)
 		os.Exit(1)
 	}
 }
 
-func run(out, targets, manifestPath, pkg string) error {
+func run(out, targets, manifestPath, pkg, releaseURL, repoURL string) error {
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return err
@@ -77,6 +88,7 @@ func run(out, targets, manifestPath, pkg string) error {
 		return err
 	}
 	var sums []string
+	release := map[string][]byte{} // "os/arch" -> binary
 	for _, t := range strings.Split(targets, ",") {
 		goos, goarch, ok := strings.Cut(strings.TrimSpace(t), "/")
 		if !ok {
@@ -108,9 +120,103 @@ func run(out, targets, manifestPath, pkg string) error {
 		sums = append(sums, fmt.Sprintf("%s  %s", hex.EncodeToString(zsum[:]), filepath.Base(zipPath)),
 			fmt.Sprintf("%s  binaries/%s", checksum, name))
 		fmt.Printf("%s  (%d bytes, plugin sha256 %s)\n", zipPath, len(zb), checksum)
+		release[goos+"/"+goarch] = bin
 	}
 	sort.Strings(sums)
-	return os.WriteFile(filepath.Join(out, "SHA256SUMS.txt"), []byte(strings.Join(sums, "\n")+"\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(out, "SHA256SUMS.txt"), []byte(strings.Join(sums, "\n")+"\n"), 0o644); err != nil {
+		return err
+	}
+	if releaseURL == "" {
+		return nil
+	}
+	return writeRelease(filepath.Join(out, "release"), strings.TrimRight(releaseURL, "/"), repoURL, raw, release)
+}
+
+// catalogPackage is one entry of a Silo plugin catalog, with the field names
+// Silo reads (internal/plugins/catalog_service.go).
+type catalogPackage struct {
+	Manifest     *pluginv1.PluginManifest `json:"manifest"`
+	RepoURL      string                   `json:"repo_url,omitempty"`
+	ChecksumsURL string                   `json:"checksums_url,omitempty"`
+	Binaries     map[string]catalogBinary `json:"binaries"`
+}
+
+type catalogBinary struct {
+	URL      string `json:"url"`
+	Checksum string `json:"checksum"`
+}
+
+// writeRelease writes the bare binaries, checksums.txt and catalog.json for a
+// GitHub release. Silo decodes a catalog with encoding/json, not protojson, so
+// the manifest is encoded the same way (enums as numbers, as Silo's own
+// catalog has them). The catalog is decoded again and compared with the
+// manifest to prove Silo will read back what manifest.json says.
+func writeRelease(dir, releaseURL, repoURL string, manifestJSON []byte, bins map[string][]byte) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	m, err := publicmanifest.Load(manifestJSON)
+	if err != nil {
+		return fmt.Errorf("load manifest: %w", err)
+	}
+	if err := publicmanifest.ValidateCatalogPresentation(m, repoURL); err != nil {
+		return fmt.Errorf("manifest presentation: %w", err)
+	}
+	m.Checksum = "" // each binary reports its own
+	platforms := map[string]bool{}
+	for _, p := range m.GetSupportedPlatforms() {
+		platforms[p.GetOs()+"/"+p.GetArch()] = true
+	}
+	pkg := catalogPackage{
+		Manifest:     m,
+		RepoURL:      repoURL,
+		ChecksumsURL: releaseURL + "/checksums.txt",
+		Binaries:     map[string]catalogBinary{},
+	}
+	var sums []string
+	for target, bin := range bins {
+		if !platforms[target] {
+			return fmt.Errorf("%s is built but not in supported_platforms", target)
+		}
+		name := "plugin-" + strings.ReplaceAll(target, "/", "-")
+		if err := os.WriteFile(filepath.Join(dir, name), bin, 0o755); err != nil {
+			return err
+		}
+		sum := sha256.Sum256(bin)
+		checksum := hex.EncodeToString(sum[:])
+		sums = append(sums, checksum+"  "+name)
+		pkg.Binaries[target] = catalogBinary{URL: releaseURL + "/" + name, Checksum: checksum}
+	}
+	for target := range platforms {
+		if _, ok := pkg.Binaries[target]; !ok {
+			return fmt.Errorf("%s is in supported_platforms but wasn't built", target)
+		}
+	}
+	sort.Strings(sums)
+	if err := os.WriteFile(filepath.Join(dir, "checksums.txt"), []byte(strings.Join(sums, "\n")+"\n"), 0o644); err != nil {
+		return err
+	}
+	catalog := struct {
+		Plugins []catalogPackage `json:"plugins"`
+	}{Plugins: []catalogPackage{pkg}}
+	body, err := json.MarshalIndent(catalog, "", "  ")
+	if err != nil {
+		return err
+	}
+	var back struct {
+		Plugins []catalogPackage `json:"plugins"`
+	}
+	if err := json.Unmarshal(body, &back); err != nil {
+		return fmt.Errorf("catalog doesn't decode: %w", err)
+	}
+	if len(back.Plugins) != 1 || !proto.Equal(back.Plugins[0].Manifest, m) {
+		return fmt.Errorf("catalog manifest doesn't decode back to manifest.json")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "catalog.json"), append(body, '\n'), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("%s  (%s %s, %d platforms)\n", filepath.Join(dir, "catalog.json"), m.GetPluginId(), m.GetVersion(), len(pkg.Binaries))
+	return nil
 }
 
 // writeZip stores the manifest with its checksum filled in, then the binary.
