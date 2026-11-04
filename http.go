@@ -509,7 +509,9 @@ func (p *Plugin) applyInput(v *viewer, prof siloProfile, existing *ProfileSettin
 	// so the saved settings of a profile that doesn't use them don't change.
 	if q.Enabled || s.Quiet != (QuietHours{}) || q.Start != defaultQuietStart || q.End != defaultQuietEnd {
 		s.Quiet = q
-		s.Quiet.SilenceEmergency = false // profiles have no emergency priority
+		// Only admin alerts can be emergencies, and they follow the quiet hours
+		// of the admin's own profile, so only that profile keeps this switch.
+		s.Quiet.SilenceEmergency = q.SilenceEmergency && v.admin && prof.ID == v.activeID
 	}
 
 	s.Types = map[string]TypeSettings{}
@@ -838,6 +840,10 @@ func (p *Plugin) handleGetAdminAlerts(ctx context.Context, a *adminViewer) *plug
 	if !found {
 		settings = defaultAdminSettings()
 		settings.UserID, settings.ProfileID, settings.Username = a.userID, a.profileID, a.username
+	} else if p.moveQuietToProfile(ctx, settings) {
+		if err := p.admins.Put(ctx, settings); err != nil {
+			p.logger.Warn("could not clear admin quiet hours after moving them to the profile", "user_id", a.userID, "error", err)
+		}
 	}
 	prof, ready, err := p.adminPushoverReady(ctx, a.profileID)
 	if err != nil {

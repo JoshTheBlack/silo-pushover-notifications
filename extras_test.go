@@ -66,27 +66,115 @@ func TestPriorityAtQuietHours(t *testing.T) {
 	a.Quiet = QuietHours{Enabled: true, Start: "14:00", End: "16:00"}
 	// 20:00 UTC is 15:00 in New York: quiet.
 	for _, c := range []struct{ in, want int }{{1, -1}, {0, -1}, {-1, -1}, {-2, -2}, {2, 2}} {
-		if got := a.priorityAt(c.in, testNow); got != c.want {
+		if got := a.priorityAt(nil, c.in, testNow); got != c.want {
 			t.Errorf("quiet: priority %d became %d, want %d", c.in, got, c.want)
 		}
 	}
 	a.Quiet.SilenceEmergency = true
-	if got := a.priorityAt(2, testNow); got != -1 {
+	if got := a.priorityAt(nil, 2, testNow); got != -1 {
 		t.Errorf("emergency with SilenceEmergency became %d, want -1", got)
 	}
 	// 21:00 UTC is 16:00 in New York: over. The same instant in UTC is not
 	// in a quiet window set for New York's afternoon.
-	if got := a.priorityAt(1, testNow.Add(time.Hour)); got != 1 {
+	if got := a.priorityAt(nil, 1, testNow.Add(time.Hour)); got != 1 {
 		t.Errorf("after quiet hours priority became %d", got)
 	}
 	a.TimeZone = "UTC"
-	if got := a.priorityAt(0, testNow); got != 0 {
+	if got := a.priorityAt(nil, 0, testNow); got != 0 {
 		t.Errorf("14:00-16:00 must not apply at 20:00 UTC, got %d", got)
 	}
 	// An unknown zone falls back to UTC rather than failing.
 	a.TimeZone = "Mars/Olympus"
 	if a.location() != time.UTC {
 		t.Errorf("unknown zone location = %v", a.location())
+	}
+}
+
+// setProfileQuiet gives a saved profile quiet hours.
+func (h *harness) setProfileQuiet(t *testing.T, profileID, tz string, q QuietHours) {
+	t.Helper()
+	ctx := context.Background()
+	s, found, err := h.plugin.store.Get(ctx, profileID)
+	if err != nil || !found {
+		t.Fatalf("profile %s: %v %v", profileID, found, err)
+	}
+	s.TimeZone, s.Quiet = tz, q
+	if err := h.plugin.store.Put(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Admin alerts follow the quiet hours of the admin's profile (the Pushover
+// account tab); those win over quiet hours saved in the admin settings.
+func TestAdminAlertsFollowProfileQuietHours(t *testing.T) {
+	h := newHarness(t)
+	h.optInAdmin(t, 7, "p1", testUserKey, and(onlyAlerts(alertStreamStarted), quietAround("America/New_York", "22:00", "07:00", false)))
+	h.setProfileQuiet(t, "p1", "America/New_York", QuietHours{Enabled: true, Start: "14:00", End: "16:00"})
+	h.mustHandle(t, startedEvent(t, "e1"))
+	if got := h.sentTo(testUserKey); len(got) != 1 || got[0].Get("priority") != "-1" {
+		t.Fatalf("profile quiet hours (15:00 New York) should lower the alert: %v", got)
+	}
+
+	// The profile's emergency switch decides for emergency alerts.
+	h2 := newHarness(t)
+	h2.optInAdmin(t, 7, "p1", testUserKey, and(onlyAlerts(alertStreamStarted), alertPriority(alertStreamStarted, 2)))
+	h2.setProfileQuiet(t, "p1", "America/New_York", QuietHours{Enabled: true, Start: "14:00", End: "16:00", SilenceEmergency: true})
+	h2.mustHandle(t, startedEvent(t, "e1"))
+	if got := h2.sentTo(testUserKey); len(got) != 1 || got[0].Get("priority") != "-1" {
+		t.Fatalf("emergency with the profile's silence switch on: %v", got)
+	}
+}
+
+// Opening the admin settings moves quiet hours saved in them onto the admin's
+// profile, once, and clears them from the admin settings.
+func TestAdminQuietHoursMoveToProfile(t *testing.T) {
+	h := newHarness(t)
+	h.optInAdmin(t, 7, "p1", testUserKey, quietAround("America/New_York", "21:30", "06:45", true))
+	if status, out := h.request(t, http.MethodGet, "/api/admin/alerts", asPrimary, nil); status != http.StatusOK {
+		t.Fatalf("GET alerts: %d %v", status, out)
+	}
+	ctx := context.Background()
+	prof, _, _ := h.plugin.store.Get(ctx, "p1")
+	if !prof.Quiet.Enabled || prof.Quiet.Start != "21:30" || prof.Quiet.End != "06:45" || !prof.Quiet.SilenceEmergency || prof.TimeZone != "America/New_York" {
+		t.Fatalf("profile quiet hours after the move: %+v %q", prof.Quiet, prof.TimeZone)
+	}
+	a, _, _ := h.plugin.admins.Get(ctx, 7)
+	if a.Quiet != (QuietHours{}) {
+		t.Fatalf("admin quiet hours not cleared: %+v", a.Quiet)
+	}
+
+	// A profile that already has quiet hours keeps its own.
+	h2 := newHarness(t)
+	h2.optInAdmin(t, 7, "p1", testUserKey, quietAround("UTC", "01:00", "02:00", false))
+	h2.setProfileQuiet(t, "p1", "Europe/London", QuietHours{Enabled: true, Start: "23:00", End: "06:00"})
+	h2.request(t, http.MethodGet, "/api/admin/alerts", asPrimary, nil)
+	prof2, _, _ := h2.plugin.store.Get(ctx, "p1")
+	if prof2.Quiet.Start != "23:00" || prof2.TimeZone != "Europe/London" {
+		t.Fatalf("the profile's own quiet hours were replaced: %+v %q", prof2.Quiet, prof2.TimeZone)
+	}
+}
+
+// Only an admin's own profile keeps "turn emergency alerts down too".
+func TestProfileSilenceEmergencyOnlyForAdminsOwnProfile(t *testing.T) {
+	h := newHarness(t)
+	h.optInAdmin(t, 7, "p1", testUserKey, nil)
+	save := func(as viewerAs, profileID string) bool {
+		t.Helper()
+		_, view := h.request(t, http.MethodGet, "/api/profiles/"+profileID, as, nil)
+		view["quiet"] = map[string]any{"enabled": true, "start": "22:00", "end": "07:00", "silence_emergency": true}
+		view["user_key"] = testUserKey
+		status, out := h.request(t, http.MethodPut, "/api/profiles/"+profileID, as, view)
+		if status != http.StatusOK {
+			t.Fatalf("save %s: %d %v", profileID, status, out)
+		}
+		s, _, _ := h.plugin.store.Get(context.Background(), profileID)
+		return s.Quiet.SilenceEmergency
+	}
+	if !save(asPrimary, "p1") {
+		t.Error("the admin's own profile lost the emergency switch")
+	}
+	if save(asKid, "p2") {
+		t.Error("a non-admin profile kept the emergency switch")
 	}
 }
 

@@ -205,9 +205,39 @@ func (s *AdminSettings) digestSlot(now time.Time) (week string, due bool) {
 }
 
 // priorityAt is the priority an alert goes out with at the given time, after
-// the admin's quiet hours.
-func (s *AdminSettings) priorityAt(priority int, at time.Time) int {
+// quiet hours. Admin alerts follow the quiet hours of the admin's profile (prof),
+// which the page's Pushover account tab sets. Admin settings saved before that
+// kept their own; those still apply while the profile has none switched on.
+func (s *AdminSettings) priorityAt(prof *ProfileSettings, priority int, at time.Time) int {
+	if prof != nil && (prof.Quiet.Enabled || !s.Quiet.Enabled) {
+		return prof.Quiet.priority(priority, at.In(locationOf(prof.TimeZone)))
+	}
 	return s.Quiet.priority(priority, at.In(s.location()))
+}
+
+// moveQuietToProfile copies an admin's own quiet hours, from before they moved
+// to the profile, onto the admin's profile when that has none switched on, and
+// clears them from the admin settings. It reports whether the settings changed.
+func (p *Plugin) moveQuietToProfile(ctx context.Context, s *AdminSettings) bool {
+	if s.Quiet == (QuietHours{}) {
+		return false
+	}
+	prof, found, err := p.store.Get(ctx, s.ProfileID)
+	if err != nil || !found || prof.UserID != s.UserID {
+		return false // keep them: they still apply through priorityAt
+	}
+	if s.Quiet.Enabled && !prof.Quiet.Enabled {
+		prof.Quiet = s.Quiet
+		if prof.TimeZone == "" {
+			prof.TimeZone = s.TimeZone
+		}
+		if err := p.store.Put(ctx, prof); err != nil {
+			p.logger.Warn("could not move admin quiet hours to the admin's profile", "user_id", s.UserID, "error", err)
+			return false
+		}
+	}
+	s.Quiet = QuietHours{}
+	return true
 }
 
 // AlertSettings controls one admin alert type. All are off by default.

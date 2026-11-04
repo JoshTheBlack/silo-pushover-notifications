@@ -1012,7 +1012,7 @@ func TestProfileAndAdminQuietHoursShareRules(t *testing.T) {
 		local := time.Date(2026, 11, 3, hour, 30, 0, 0, loc)
 		s := &ProfileSettings{Quiet: q, TimeZone: "America/New_York"}
 		a := &AdminSettings{Quiet: q, TimeZone: "America/New_York"}
-		if s.priorityAt(1, local) != a.priorityAt(1, local) {
+		if s.priorityAt(1, local) != a.priorityAt(nil, 1, local) {
 			t.Errorf("hour %d: profile and admin disagree", hour)
 		}
 	}

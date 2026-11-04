@@ -503,7 +503,7 @@ func (p *Plugin) sendAdminAlert(ctx context.Context, log *slog.Logger, r *recipi
 	log = log.With("user_id", r.admin.UserID, "alert", r.kind)
 	msg := p.adminPush(ctx, r.admin, r.profile, r.kind, r.vars, at)
 	msg.Token = r.token
-	msg.Priority = r.admin.priorityAt(msg.Priority, p.now())
+	msg.Priority = r.admin.priorityAt(r.profile, msg.Priority, p.now())
 	if isPlaybackAlert(r.kind) && r.admin.AttachPoster {
 		msg.Attachment, msg.AttachmentType = r.poster, r.posterType
 	}
