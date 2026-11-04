@@ -240,6 +240,13 @@ func (p *Plugin) serveAPI(ctx context.Context, req *pluginv1.HandleHTTPRequest) 
 	}
 
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(req.GetPath(), "/api/"), "/"), "/")
+	if len(parts) == 1 && parts[0] == "openapi.json" && method == http.MethodGet {
+		return &pluginv1.HandleHTTPResponse{
+			StatusCode: http.StatusOK,
+			Headers:    map[string]string{"Content-Type": "application/json", "Cache-Control": "no-cache"},
+			Body:       openAPIJSON,
+		}
+	}
 	if len(parts) == 1 && parts[0] == "state" && method == http.MethodGet {
 		return p.handleState(ctx, req)
 	}

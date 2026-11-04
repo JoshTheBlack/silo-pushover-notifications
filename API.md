@@ -3,6 +3,13 @@
 The settings page is a thin client over a JSON API that the plugin serves
 through Silo. Anything the page can do, a script can do with the same calls.
 
+A machine-readable OpenAPI 3.1 description of every endpoint is served at
+`api/openapi.json` (for example
+`https://<your-silo>/api/v2/plugin-content/plugins/9/api/openapi.json`, with
+the same headers as below). Its server URL is relative (`..`), so tools that
+load it from that address call the right base. Silo's own
+`/api/v2/openapi.json` covers only Silo's routes, not plugins'.
+
 ## Base URL and sign-in
 
 ```
@@ -82,7 +89,9 @@ Fields: `enabled`, `device`, `sound`, `priority` (-2 to 1), `html`,
 `group_title`, `group_message`), `episode_reasons` (any of `favorite`,
 `watchlist`, `continue_watching`, `next_up`; empty means all), `group_minutes`
 (0 = off, 1 to 120), `quiet` (`enabled`, `start`, `end` as `HH:MM`,
-`silence_emergency`), `time_zone` (IANA name).
+`silence_emergency`), `time_zone` (IANA name). Admin alerts follow the quiet
+hours of the admin's own profile, so `silence_emergency` (also turn emergency
+admin alerts down) is kept only on that profile.
 
 Notification types: `episode.available`, `request.approved`,
 `request.declined`, `request.fulfilled`, `other`.
@@ -149,8 +158,8 @@ Returns:
 | `filters` | `ignore_users` (account IDs), `only_remote`, `only_transcodes`, `media_types`, `libraries` (library IDs) |
 | `noise` | `mode` (`every`, `cooldown`, `binge`) and `window_minutes` (1 to 1440) |
 | `limits` | `user_streams`, `server_streams`, `bandwidth_mbps`, `bandwidth_remote_only`, `disk_pct`, `memory_pct` (0 = off for the last two) |
-| `quiet` | `enabled`, `start`, `end` (`HH:MM`), `silence_emergency` |
-| `time_zone` | IANA name; empty on `PUT` keeps the saved one |
+| `quiet` | Deprecated. Admin alerts follow the quiet hours of the admin's profile; this is used only while that profile has none, and the plugin moves it to the profile the next time you `GET` these settings |
+| `time_zone` | IANA name for the digest schedule; empty on `PUT` keeps the saved one |
 | `digest` | `day` (0 = Sunday) and `hour` (0 to 23), in `time_zone` |
 | `attach_poster` | Posters on playback alerts |
 | `silo_link` | "Open in Silo" link to `/admin/activity` on stream alerts |

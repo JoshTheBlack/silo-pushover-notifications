@@ -25,6 +25,11 @@ var manifestJSON []byte
 //go:embed web/index.html
 var indexHTML []byte
 
+// openAPIJSON describes the plugin's JSON API (served at api/openapi.json).
+//
+//go:embed web/openapi.json
+var openAPIJSON []byte
+
 // Plugin holds the state shared by the runtime, event and HTTP servers.
 type Plugin struct {
 	logger   *slog.Logger
