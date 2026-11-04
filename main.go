@@ -22,6 +22,11 @@ import (
 //go:embed manifest.json
 var manifestJSON []byte
 
+// version replaces manifest.json's version when set at build time with
+// -ldflags "-X main.version=...". Dev builds use it (0.4.0-dev.12) so each push
+// is newer than the last; release builds leave it empty.
+var version string
+
 //go:embed web/index.html
 var indexHTML []byte
 
@@ -229,7 +234,7 @@ func (p *Plugin) configure(_ context.Context, entries []*pluginv1.ConfigEntry) e
 }
 
 func main() {
-	manifest, err := publicmanifest.LoadWithChecksum(manifestJSON, "")
+	manifest, err := publicmanifest.LoadWithChecksum(manifestJSON, version)
 	if err != nil {
 		panic(err)
 	}
@@ -243,7 +248,7 @@ func main() {
 	// ServeManifestWithOptions answers GetManifest and BindHostBroker itself
 	// and, because the manifest declares configuration_check, refuses to start
 	// without the ConfigurationChecks server.
-	sdkruntime.ServeManifestWithOptions(manifestJSON, "", sdkruntime.CapabilityServers{
+	sdkruntime.ServeManifestWithOptions(manifestJSON, version, sdkruntime.CapabilityServers{
 		EventConsumer: &eventServer{plugin: plugin},
 		HttpRoutes:    &routesServer{plugin: plugin},
 		ScheduledTask: &taskServer{plugin: plugin},

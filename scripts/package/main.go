@@ -33,6 +33,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -49,6 +50,8 @@ func main() {
 	verify := flag.String("verify", "", "only check this zip (os_arch taken from its name) and exit")
 	releaseURL := flag.String("release-url", "", "release download folder, e.g. https://github.com/OWNER/REPO/releases/download/v1.2.3; writes dist/release/")
 	repoURL := flag.String("repo-url", "https://github.com/joshtheblack/silo-pushover-notifications", "source repository listed in the catalog")
+	version := flag.String("version", "", "build as this version instead of manifest.json's; must be manifest.json's version plus a pre-release, e.g. 0.4.0-dev.12")
+	mergeCatalog := flag.String("merge-catalog", "", "catalog.json whose entries for this plugin are copied into ours (other versions only); a missing file is skipped")
 	flag.Parse()
 	if *verify != "" {
 		base := strings.TrimSuffix(filepath.Base(*verify), ".zip")
@@ -65,13 +68,13 @@ func main() {
 		fmt.Println("ok", *verify)
 		return
 	}
-	if err := run(*out, *targets, *manifestPath, *pkg, *releaseURL, *repoURL); err != nil {
+	if err := run(*out, *targets, *manifestPath, *pkg, *releaseURL, *repoURL, *version, *mergeCatalog); err != nil {
 		fmt.Fprintln(os.Stderr, "package:", err)
 		os.Exit(1)
 	}
 }
 
-func run(out, targets, manifestPath, pkg, releaseURL, repoURL string) error {
+func run(out, targets, manifestPath, pkg, releaseURL, repoURL, version, mergeCatalog string) error {
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return err
@@ -82,6 +85,17 @@ func run(out, targets, manifestPath, pkg, releaseURL, repoURL string) error {
 	}
 	if err := json.Unmarshal(raw, &head); err != nil || head.Version == "" {
 		return fmt.Errorf("read version from %s: %v", manifestPath, err)
+	}
+	ldflags := "-s -w"
+	if version != "" {
+		if !devVersion.MatchString(version) || !strings.HasPrefix(version, head.Version+"-") {
+			return fmt.Errorf("version %q must be %s-<pre-release>, e.g. %s-dev.1", version, head.Version, head.Version)
+		}
+		if raw, err = setManifestField(raw, "version", version); err != nil {
+			return err
+		}
+		head.Version = version
+		ldflags += " -X main.version=" + version
 	}
 	binDir := filepath.Join(out, "binaries")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -96,7 +110,7 @@ func run(out, targets, manifestPath, pkg, releaseURL, repoURL string) error {
 		}
 		name := fmt.Sprintf("silo-pushover-notifications_%s_%s_%s", head.Version, goos, goarch)
 		binPath := filepath.Join(binDir, name)
-		cmd := exec.Command("go", "build", "-trimpath", "-ldflags", "-s -w", "-o", binPath, pkg)
+		cmd := exec.Command("go", "build", "-trimpath", "-ldflags", ldflags, "-o", binPath, pkg)
 		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
@@ -129,7 +143,60 @@ func run(out, targets, manifestPath, pkg, releaseURL, repoURL string) error {
 	if releaseURL == "" {
 		return nil
 	}
-	return writeRelease(filepath.Join(out, "release"), strings.TrimRight(releaseURL, "/"), repoURL, raw, release)
+	var extra []catalogPackage
+	if mergeCatalog != "" {
+		if extra, err = readCatalog(mergeCatalog, head.PluginID, head.Version); err != nil {
+			return err
+		}
+	}
+	return writeRelease(filepath.Join(out, "release"), strings.TrimRight(releaseURL, "/"), repoURL, raw, release, extra)
+}
+
+// devVersion is a semver version with a pre-release, such as 0.4.0-dev.12.
+var devVersion = regexp.MustCompile(`^\d+\.\d+\.\d+-[0-9A-Za-z.-]+$`)
+
+// setManifestField replaces one top-level field of the manifest JSON.
+func setManifestField(manifest []byte, key string, value any) ([]byte, error) {
+	var m map[string]json.RawMessage
+	dec := json.NewDecoder(bytes.NewReader(manifest))
+	dec.UseNumber()
+	if err := dec.Decode(&m); err != nil {
+		return nil, err
+	}
+	v, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	m[key] = v
+	return json.MarshalIndent(m, "", "  ")
+}
+
+// readCatalog returns the entries of another catalog (the stable one, for the
+// dev catalog) for this plugin, leaving out the version being built. A missing
+// file means there is no such catalog yet.
+func readCatalog(path, pluginID, skipVersion string) ([]catalogPackage, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		fmt.Printf("%s not found; nothing to merge\n", path)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var c struct {
+		Plugins []catalogPackage `json:"plugins"`
+	}
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	var out []catalogPackage
+	for _, p := range c.Plugins {
+		if p.Manifest.GetPluginId() == pluginID && p.Manifest.GetVersion() != skipVersion {
+			out = append(out, p)
+			fmt.Printf("merged %s %s from %s\n", pluginID, p.Manifest.GetVersion(), path)
+		}
+	}
+	return out, nil
 }
 
 // catalogPackage is one entry of a Silo plugin catalog, with the field names
@@ -151,7 +218,7 @@ type catalogBinary struct {
 // the manifest is encoded the same way (enums as numbers, as Silo's own
 // catalog has them). The catalog is decoded again and compared with the
 // manifest to prove Silo will read back what manifest.json says.
-func writeRelease(dir, releaseURL, repoURL string, manifestJSON []byte, bins map[string][]byte) error {
+func writeRelease(dir, releaseURL, repoURL string, manifestJSON []byte, bins map[string][]byte, extra []catalogPackage) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -198,7 +265,7 @@ func writeRelease(dir, releaseURL, repoURL string, manifestJSON []byte, bins map
 	}
 	catalog := struct {
 		Plugins []catalogPackage `json:"plugins"`
-	}{Plugins: []catalogPackage{pkg}}
+	}{Plugins: append([]catalogPackage{pkg}, extra...)}
 	body, err := json.MarshalIndent(catalog, "", "  ")
 	if err != nil {
 		return err
@@ -209,7 +276,7 @@ func writeRelease(dir, releaseURL, repoURL string, manifestJSON []byte, bins map
 	if err := json.Unmarshal(body, &back); err != nil {
 		return fmt.Errorf("catalog doesn't decode: %w", err)
 	}
-	if len(back.Plugins) != 1 || !proto.Equal(back.Plugins[0].Manifest, m) {
+	if len(back.Plugins) != 1+len(extra) || !proto.Equal(back.Plugins[0].Manifest, m) {
 		return fmt.Errorf("catalog manifest doesn't decode back to manifest.json")
 	}
 	if err := os.WriteFile(filepath.Join(dir, "catalog.json"), append(body, '\n'), 0o644); err != nil {

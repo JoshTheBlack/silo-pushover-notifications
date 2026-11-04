@@ -51,10 +51,28 @@ go run ./scripts/package   # zips and bare binaries in dist/
 
 ## Releasing
 
-1. Set `version` in `manifest.json` and commit it to `main`.
-2. Tag the commit and push the tag: `git tag v1.2.3 && git push origin v1.2.3`.
+There are two tracks: dev builds for testing, and stable releases for everyone.
+
+### Dev builds
+
+Every push to `dev` or a `dev/*` branch runs the Dev build workflow. It tests, builds version `<manifest version>-dev.<run number>` (for example `0.4.0-dev.12`) and replaces the `dev-build` pre-release on GitHub. A test server adds this catalog instead of the stable one:
+
+```
+https://github.com/joshtheblack/silo-pushover-notifications/releases/download/dev-build/catalog.json
+```
+
+Each push sorts above the last, and below the release it leads up to (`0.4.0-dev.12` < `0.4.0`). The dev catalog also lists the latest stable release, so a test server gets that too.
+
+After a release, bump `version` in `manifest.json` on the dev branch (for example from `0.4.0` to `0.5.0`). The workflow refuses to build a version that is already released, because those dev builds would sort below it.
+
+### Stable releases
+
+1. Merge the dev branch into `main`. `manifest.json` holds the version being released, such as `0.4.0`.
+2. Tag the commit and push the tag: `git tag v0.4.0 && git push origin v0.4.0`.
 3. The Release workflow tests, builds and creates a **draft** release with the binaries, zips and `catalog.json`.
-4. Check the draft and publish it. Servers that added the repository see the new version on their next catalog check.
+4. Check the draft and publish it. It becomes the latest release, which the stable catalog URL points to.
+
+Silo checks plugin catalogs when it starts and then once a day (the **Check Plugin Updates** scheduled task). Run that task to pick up a release sooner.
 
 ## License
 

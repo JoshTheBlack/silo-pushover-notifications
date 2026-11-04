@@ -1,0 +1,80 @@
+# Builds a dev release on every push to a dev branch and publishes it as the
+# "dev-build" pre-release, replacing the previous one. A test server adds this
+# catalog instead of the stable one:
+#
+#   https://github.com/<owner>/<repo>/releases/download/dev-build/catalog.json
+#
+# The version is manifest.json's plus "-dev.<run number>" (0.4.0-dev.12), so
+# each push is newer than the last and older than the 0.4.0 release. The dev
+# catalog also lists the latest stable release, so a dev server gets that too.
+# A pre-release is never GitHub's "latest", so the stable catalog never lists a
+# dev build.
+name: Dev build
+
+on:
+  push:
+    branches: ["dev", "dev/**"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dev-build
+  cancel-in-progress: false
+
+jobs:
+  dev-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Pick the version
+        id: version
+        run: |
+          base="$(jq -r .version manifest.json)"
+          latest="$(git ls-remote --tags --refs origin 'v*' | sed 's#.*refs/tags/v##' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
+          if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$latest" "$base" | sort -V | tail -n1)" = "$latest" ]; then
+            echo "::error::manifest.json says $base but v$latest is already released. Bump the version on this branch (for example to the next minor version) so dev builds sort above the release."
+            exit 1
+          fi
+          echo "version=$base-dev.$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; echo "::error::run gofmt"; exit 1; }
+          go vet ./...
+          go test ./...
+
+      - name: Fetch the stable catalog
+        run: |
+          curl -fsSL -o stable-catalog.json "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/catalog.json" \
+            || { rm -f stable-catalog.json; echo "No stable release yet."; }
+
+      - name: Build
+        run: >
+          go run ./scripts/package -out dist
+          -version "${{ steps.version.outputs.version }}"
+          -merge-catalog stable-catalog.json
+          -release-url "https://github.com/$GITHUB_REPOSITORY/releases/download/dev-build"
+          -repo-url "https://github.com/$GITHUB_REPOSITORY"
+
+      - name: Check a binary reports its manifest
+        run: |
+          chmod +x dist/release/plugin-linux-amd64
+          dist/release/plugin-linux-amd64 manifest | jq -e --arg v "${{ steps.version.outputs.version }}" '.version == $v'
+
+      - name: Publish the dev-build pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release delete dev-build --yes --cleanup-tag || true
+          gh release create dev-build --prerelease --latest=false --target "$GITHUB_SHA" \
+            --title "Dev build $VERSION" \
+            --notes "Built from \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}. For testing; not for general use. Silo catalog: https://github.com/$GITHUB_REPOSITORY/releases/download/dev-build/catalog.json" \
+            dist/release/catalog.json dist/release/checksums.txt dist/release/plugin-* \
+            dist/*.zip dist/SHA256SUMS.txt
