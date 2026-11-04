@@ -3,11 +3,9 @@ package main
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -15,43 +13,60 @@ import (
 	"time"
 )
 
-// Admin playback alerts. Each session.* event goes to every admin who
-// switched that alert on, whose filters and noise mode let it through, and
-// whom Silo still lists as an enabled admin. Alerts need the read-only Silo
-// key: it's how the plugin re-checks each recipient's role.
+// Admin alerts. Each session.* event goes to every admin who switched on an
+// alert it triggers, whose filters, noise mode and limits let it through,
+// and whom Silo still lists as an enabled admin. Alerts need the read-only
+// Silo key: it's how the plugin re-checks each recipient's role, recounts
+// live streams, and learns each account's devices and addresses.
 //
-// One event can reach several admins, so each recipient is recorded as
-// handled on its own (event ID plus account ID). A retry after a partial
-// failure sends only to the admins who didn't get it.
+// One event can reach several admins, and several alerts can reach one
+// admin, so each is recorded as handled on its own (event ID plus account ID,
+// plus the alert for watchdog alerts). A retry after a partial failure sends
+// only what didn't go out.
+//
+// Everything runs inside the event's deadline: the Silo lookups run side by
+// side within lookupBudget, and the sends get the rest.
 
 const (
-	// roleCheckBudget bounds the role checks, leaving the rest of the event
-	// deadline for sending.
-	roleCheckBudget = 3 * time.Second
+	// lookupBudget bounds the Silo lookups one event needs (role checks, the
+	// stream recount, device and address seeding, the library lookup),
+	// leaving the rest of the event deadline for sending.
+	lookupBudget = 3 * time.Second
 	// liveSessionTTL is how long a session with no stop seen still counts as
 	// playing.
 	liveSessionTTL = 12 * time.Hour
 )
 
-// recipient is one admin an event may go to.
+// recipient is one alert to one admin.
 type recipient struct {
-	admin   *AdminSettings
-	kind    string // the alert type sent to this admin
-	key     string // handled-event ID for this admin, "" when not deduped
+	admin *AdminSettings
+	kind  string // the alert type sent to this admin
+	key   string // handled-event ID for this alert, "" when not deduped
+	// vars fills the alert's placeholders; nil means the event's own.
+	vars    map[string]string
 	profile *ProfileSettings
 	token   string
 }
 
-// handlePlaybackEvent sends the admin alerts for one session.* event. It
-// returns an error only when trying the event again could help.
+// newRecipient builds a recipient whose handled-event ID extends baseKey.
+// A playback alert is one per admin per event; other alerts add their type.
+func newRecipient(a *AdminSettings, kind, baseKey string) *recipient {
+	r := &recipient{admin: a, kind: kind}
+	if baseKey != "" {
+		r.key = baseKey + "|admin:" + strconv.Itoa(a.UserID)
+		if !isPlaybackAlert(kind) {
+			r.key += "|" + kind
+		}
+	}
+	return r
+}
+
+// handlePlaybackEvent tracks one session.* event and sends the admin alerts
+// it triggers. It returns an error only when trying the event again could
+// help.
 func (p *Plugin) handlePlaybackEvent(ctx context.Context, eventID, eventName string, raw []byte) error {
 	pb, ok := parseLifecycle(eventName, raw, time.Now())
 	if !ok {
-		return nil
-	}
-	// A replaced session goes on playing in a new one, which sends its own
-	// start.
-	if pb.Event == eventSessionStopped && pb.EndReason == endReasonReplaced {
 		return nil
 	}
 	cfg := p.config()
@@ -66,34 +81,30 @@ func (p *Plugin) handlePlaybackEvent(ctx context.Context, eventID, eventName str
 		log.Warn("could not load admin alert settings; asking Silo to retry", "error", err)
 		return fmt.Errorf("load admin alert settings: %w", err)
 	}
-	var candidates []*recipient
-	optedIn := false
-	for _, a := range admins {
-		optedIn = optedIn || a.anyEnabled()
-		if kind, ok := a.alertFor(pb); ok {
-			r := &recipient{admin: a, kind: kind}
-			if key != "" {
-				r.key = key + "|admin:" + strconv.Itoa(a.UserID)
-			}
-			candidates = append(candidates, r)
-		}
-	}
-	if len(candidates) == 0 {
-		if optedIn {
-			// Remember the session anyway, for binges and for its stop's
-			// filters.
-			if _, err := p.throttle.decide(ctx, log, &pb, nil); err != nil {
-				log.Debug("could not read alert noise-control state", "error", err)
-			}
-		}
+	// With nobody opted in there's nothing to track for.
+	if !slices.ContainsFunc(admins, (*AdminSettings).anyEnabled) {
 		return nil
 	}
 
-	// retry is set when some recipient couldn't be handled yet; the others
-	// still get the alert now and are skipped when Silo retries.
-	candidates, stop, retry := p.confirmAdmins(ctx, log, cfg.MonitorAPIKey, candidates)
-	if stop {
-		return nil
+	var candidates []*recipient
+	// A replaced session goes on playing in a new one, which sends its own
+	// start; its stop is only tracked.
+	if pb.Event != eventSessionStopped || pb.EndReason != endReasonReplaced {
+		for _, a := range admins {
+			for _, kind := range a.sessionAlerts(pb) {
+				candidates = append(candidates, newRecipient(a, kind, key))
+			}
+		}
+	}
+
+	ev := &watchEvent{pb: &pb, admins: admins}
+	retry := false
+	if len(candidates) > 0 || pb.Event == eventSessionStarted {
+		var stop bool
+		candidates, stop, retry = p.lookUp(ctx, log, cfg.MonitorAPIKey, key, ev, candidates)
+		if stop {
+			return nil
+		}
 	}
 
 	candidates, again, err := p.dropHandled(ctx, log, candidates)
@@ -103,39 +114,135 @@ func (p *Plugin) handlePlaybackEvent(ctx context.Context, eventID, eventName str
 	}
 	retry = retry || again
 
-	recipients, err := p.throttle.decide(ctx, log, &pb, candidates)
+	recipients, err := p.watch.decide(ctx, log, ev, candidates)
 	if err != nil {
 		log.Warn("could not read alert noise-control state; asking Silo to retry", "error", err)
 		return fmt.Errorf("read alert noise-control state: %w", err)
 	}
-
-	var handled []string
-	var mu sync.Mutex
-	var wg sync.WaitGroup
+	vars := pb.vars() // after decide, which may fill in a stop's details
 	for _, r := range recipients {
-		wg.Go(func() {
-			done, again := p.sendAdminAlert(ctx, log, pb, r)
-			mu.Lock()
-			defer mu.Unlock()
-			if done && r.key != "" {
-				handled = append(handled, r.key)
-			}
-			retry = retry || again
-		})
-	}
-	wg.Wait()
-
-	if len(handled) > 0 {
-		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
-		if err := p.handled.RecordMany(rctx, handled); err != nil {
-			log.Warn("could not record handled admin alerts; a repeat may be sent twice", "error", err)
+		if r.vars == nil {
+			r.vars = vars
 		}
-		cancel()
 	}
-	if retry {
+	if p.fanOut(ctx, log, recipients, pb.At) || retry {
 		return errors.New("some admin alerts couldn't be sent yet")
 	}
 	return nil
+}
+
+// lookUp makes the Silo calls an event needs, side by side within
+// lookupBudget: each recipient's role, the live stream recount (for limit
+// alerts), the account's known devices and addresses (on a start), and the
+// item's libraries (for library filters). It returns the recipients that are
+// still in; stop is true when Silo rejected the key, and again when a lookup
+// failed for a reason a retry could fix.
+func (p *Plugin) lookUp(ctx context.Context, log *slog.Logger, apiKey, eventKey string, ev *watchEvent, candidates []*recipient) (kept []*recipient, stop, again bool) {
+	base, err := p.siloBase(ctx)
+	if err != nil {
+		if len(candidates) == 0 {
+			return nil, false, false
+		}
+		log.Warn("Silo's internal URL isn't known yet; asking Silo to retry", "error", err)
+		return nil, false, true
+	}
+	lctx, cancel := context.WithTimeout(ctx, lookupBudget)
+	defer cancel()
+	pb := ev.pb
+	wants := func(match func(*recipient) bool) bool { return slices.ContainsFunc(candidates, match) }
+	needCount := wants(func(r *recipient) bool { return isLimitAlert(r.kind) })
+	needLibs := pb.ContentID != "" && wants(func(r *recipient) bool {
+		return isPlaybackAlert(r.kind) && len(r.admin.Filters.Libraries) > 0
+	})
+	ip := seenIP(*pb)
+	needSeen := pb.Event == eventSessionStarted && (pb.DeviceID != "" || ip != "")
+
+	var wg sync.WaitGroup
+	var roleStop, roleAgain bool
+	confirmed := candidates
+	if len(candidates) > 0 {
+		wg.Go(func() { confirmed, roleStop, roleAgain = p.confirmAdmins(lctx, log, base, apiKey, candidates) })
+	}
+	var countErr, libsErr, seenErr error
+	if needCount {
+		wg.Go(func() {
+			var rows []adminSession
+			if rows, countErr = p.silo.Sessions(lctx, base, apiKey); countErr == nil {
+				ev.live = make([]playback, 0, len(rows))
+				for _, row := range rows {
+					s := playback{SessionID: row.SessionID}
+					s.fromSession(&row)
+					ev.live = append(ev.live, s)
+				}
+			}
+		})
+	}
+	if needLibs {
+		wg.Go(func() {
+			ev.libs, libsErr = p.silo.ContentLibraries(lctx, base, apiKey, pb.ContentID)
+			ev.libsKnown = libsErr == nil
+		})
+	}
+	if needSeen {
+		wg.Go(func() {
+			seed := func(ctx context.Context) ([]string, []string, error) {
+				var devices, ips []string
+				var derr, ierr error
+				var sw sync.WaitGroup
+				sw.Go(func() { devices, derr = p.silo.UserDevices(ctx, base, apiKey, pb.UserID) })
+				sw.Go(func() { ips, ierr = p.silo.UserRemoteIPs(ctx, base, apiKey, pb.UserID) })
+				sw.Wait()
+				return devices, ips, cmp.Or(derr, ierr)
+			}
+			ev.newDevice, ev.newIP, seenErr = p.seen.check(lctx, pb.UserID, pb.DeviceID, ip, eventKey, seed)
+		})
+	}
+	wg.Wait()
+	if roleStop {
+		return nil, true, false
+	}
+	again = roleAgain
+
+	// failed reports whether a lookup an alert needs failed, logging it
+	// once, and notes whether a retry could help.
+	logged := map[string]bool{}
+	failed := func(what string, err error) bool {
+		if err == nil {
+			return false
+		}
+		keyErr := errors.Is(err, errSiloKeyRejected) || errors.Is(err, errSiloKeyScope)
+		if !logged[what] {
+			logged[what] = true
+			if keyErr {
+				log.Warn("the read-only Silo key can't "+what+"; skipping the alerts that need it", "error", err)
+			} else {
+				log.Warn("could not "+what+"; will retry the alerts that need it", "error", err)
+			}
+		}
+		again = again || !keyErr
+		return true
+	}
+	for _, r := range confirmed {
+		switch {
+		case isLimitAlert(r.kind):
+			if failed("recount live streams", countErr) {
+				continue
+			}
+		case r.kind == alertNewDevice, r.kind == alertNewIP:
+			if failed("look up the account's known devices and addresses", seenErr) {
+				continue
+			}
+			if (r.kind == alertNewDevice && !ev.newDevice) || (r.kind == alertNewIP && !ev.newIP) {
+				continue
+			}
+		case isPlaybackAlert(r.kind) && len(r.admin.Filters.Libraries) > 0:
+			if failed("look up the item's libraries", libsErr) {
+				continue
+			}
+		}
+		kept = append(kept, r)
+	}
+	return kept, false, again
 }
 
 // playbackDedupeKey identifies an event across retries. Older hosts send no
@@ -150,15 +257,43 @@ func playbackDedupeKey(eventID string, pb playback) string {
 	return ""
 }
 
-// alertFor picks the alert an admin gets for pb, if any. A failed play goes
-// out as "stream stopped" to admins who want stops but not failures.
+// sessionAlerts lists the alerts pb may send this admin. Filters that need
+// the event's lookups (a stop's location and method, libraries) and the
+// noise mode and limits are applied later, in watchStore.decide.
+func (a *AdminSettings) sessionAlerts(pb playback) []string {
+	var kinds []string
+	if kind, ok := a.alertFor(pb); ok {
+		kinds = append(kinds, kind)
+	}
+	if pb.Event != eventSessionStarted {
+		return kinds
+	}
+	on := func(kind string) bool { return a.alert(kind).Enabled }
+	ignored := slices.Contains(a.Filters.IgnoreUsers, pb.UserID)
+	for _, kind := range limitAlerts {
+		if on(kind) && a.Limits.limit(kind) > 0 && !(kind == alertStreamsUser && ignored) {
+			kinds = append(kinds, kind)
+		}
+	}
+	if on(alertNewDevice) && !ignored && pb.DeviceID != "" {
+		kinds = append(kinds, alertNewDevice)
+	}
+	if on(alertNewIP) && !ignored && seenIP(pb) != "" {
+		kinds = append(kinds, alertNewIP)
+	}
+	return kinds
+}
+
+// alertFor picks the playback alert an admin gets for pb, if any. A failed
+// play goes out as "stream stopped" to admins who want stops but not
+// failures.
 func (a *AdminSettings) alertFor(pb playback) (string, bool) {
 	kind := pb.alertKind()
 	if kind == "" {
 		return "", false
 	}
 	// A stop's location and method are only known for sure once its start
-	// has been looked up (throttleStore.decide), which checks them then.
+	// has been looked up (watchStore.decide), which checks them then.
 	f := a.Filters
 	if pb.Event == eventSessionStopped {
 		f.OnlyRemote, f.OnlyTranscodes = false, false
@@ -175,8 +310,9 @@ func (a *AdminSettings) alertFor(pb playback) (string, bool) {
 	return "", false
 }
 
-// match applies the filters. Unknown location or method counts as not
-// remote and not a transcode.
+// match applies the filters known from the event itself. Unknown location
+// or method counts as not remote and not a transcode. Libraries are checked
+// in watchStore.decide, once looked up.
 func (f AdminFilters) match(pb playback) bool {
 	switch {
 	case slices.Contains(f.IgnoreUsers, pb.UserID):
@@ -191,48 +327,70 @@ func (f AdminFilters) match(pb playback) bool {
 	return true
 }
 
-// confirmAdmins keeps the candidates Silo still lists as enabled admins.
-// stop is true when Silo rejected the key: no admin alerts go out, and that
-// is logged once until the key changes. again is true when a lookup failed
-// for a reason a retry could fix.
-func (p *Plugin) confirmAdmins(ctx context.Context, log *slog.Logger, apiKey string, candidates []*recipient) (kept []*recipient, stop, again bool) {
+// siloBase is Silo's internal URL, for the read-only client.
+func (p *Plugin) siloBase(ctx context.Context) (string, error) {
 	info, err := p.host(ctx)
-	if err != nil || info.InternalBaseURL == "" {
-		log.Warn("Silo's internal URL isn't known yet; asking Silo to retry", "error", err)
-		return nil, false, true
+	if err != nil {
+		return "", err
 	}
-	base := strings.TrimRight(info.InternalBaseURL, "/")
-	cctx, cancel := context.WithTimeout(ctx, roleCheckBudget)
-	defer cancel()
+	if info.InternalBaseURL == "" {
+		return "", errors.New("Silo's internal URL is not known yet")
+	}
+	return strings.TrimRight(info.InternalBaseURL, "/"), nil
+}
 
-	errs := make([]error, len(candidates))
-	users := make([]*siloUser, len(candidates))
+// confirmAdmins keeps the candidates Silo still lists as enabled admins,
+// looking each admin up once however many alerts they're due. stop is true
+// when Silo rejected the key: no admin alerts go out, and that is logged once
+// until the key changes. again is true when a lookup failed for a reason a
+// retry could fix.
+func (p *Plugin) confirmAdmins(ctx context.Context, log *slog.Logger, base, apiKey string, candidates []*recipient) (kept []*recipient, stop, again bool) {
+	type lookup struct {
+		user *siloUser
+		err  error
+	}
+	var ids []int
+	for _, r := range candidates {
+		if !slices.Contains(ids, r.admin.UserID) {
+			ids = append(ids, r.admin.UserID)
+		}
+	}
+	results := make([]lookup, len(ids))
 	var wg sync.WaitGroup
-	for i, r := range candidates {
-		wg.Go(func() { users[i], errs[i] = p.silo.User(cctx, base, apiKey, r.admin.UserID) })
+	for i, id := range ids {
+		wg.Go(func() {
+			u, err := p.silo.User(ctx, base, apiKey, id)
+			results[i] = lookup{u, err}
+		})
 	}
 	wg.Wait()
 
-	for i, r := range candidates {
-		err := errs[i]
+	ok := map[int]bool{}
+	for i, id := range ids {
+		res := results[i]
 		switch {
-		case errors.Is(err, errSiloKeyRejected), errors.Is(err, errSiloKeyScope):
+		case errors.Is(res.err, errSiloKeyRejected), errors.Is(res.err, errSiloKeyScope):
 			if !p.adminKeyWarned.Swap(true) {
-				log.Warn("Silo refused the read-only key, so admin alerts are paused until it's fixed. Set up the key again from the admin section of the Pushover page.", "error", err)
+				log.Warn("Silo refused the read-only key, so admin alerts are paused until it's fixed. Set up the key again from the admin section of the Pushover page.", "error", res.err)
 			}
 			return nil, true, false
-		case errors.Is(err, errSiloUserNotFound):
-			log.Info("skipping admin alerts for an account Silo no longer has", "user_id", r.admin.UserID)
-		case err != nil:
-			log.Warn("could not check an admin's role; will retry for them", "user_id", r.admin.UserID, "error", err)
+		case errors.Is(res.err, errSiloUserNotFound):
+			log.Info("skipping admin alerts for an account Silo no longer has", "user_id", id)
+		case res.err != nil:
+			log.Warn("could not check an admin's role; will retry for them", "user_id", id, "error", res.err)
 			again = true
-		case !users[i].isAdmin():
-			log.Info("skipping admin alerts for an account that is no longer an enabled admin", "user_id", r.admin.UserID)
+		case !res.user.isAdmin():
+			log.Info("skipping admin alerts for an account that is no longer an enabled admin", "user_id", id)
 		default:
-			kept = append(kept, r)
+			ok[id] = true
 		}
 	}
 	p.adminKeyWarned.Store(false)
+	for _, r := range candidates {
+		if ok[r.admin.UserID] {
+			kept = append(kept, r)
+		}
+	}
 	return kept, false, again
 }
 
@@ -251,23 +409,36 @@ func (p *Plugin) dropHandled(ctx context.Context, log *slog.Logger, candidates [
 		return nil, false, err
 	}
 	cfg := p.config()
+	profiles := map[int]*ProfileSettings{}
+	skipped := map[int]bool{}
 	for _, r := range candidates {
 		if r.key != "" && seen[r.key] {
 			continue
 		}
-		prof, found, err := p.loadSettingsForDelivery(ctx, r.admin.ProfileID)
-		switch {
-		case err != nil:
-			log.Warn("could not load an admin's Pushover settings; will retry for them", "user_id", r.admin.UserID, "error", err)
-			again = true
+		id := r.admin.UserID
+		if skipped[id] {
 			continue
-		case !found || prof.UserKey == "" || prof.UserID != r.admin.UserID:
-			log.Info("admin has alerts on but their profile has no Pushover settings", "user_id", r.admin.UserID)
-			continue
+		}
+		prof := profiles[id]
+		if prof == nil {
+			var found bool
+			prof, found, err = p.loadSettingsForDelivery(ctx, r.admin.ProfileID)
+			switch {
+			case err != nil:
+				log.Warn("could not load an admin's Pushover settings; will retry for them", "user_id", id, "error", err)
+				again, skipped[id] = true, true
+				continue
+			case !found || prof.UserKey == "" || prof.UserID != id:
+				log.Info("admin has alerts on but their profile has no Pushover settings", "user_id", id)
+				skipped[id] = true
+				continue
+			}
+			profiles[id] = prof
 		}
 		r.profile, r.token = prof, effectiveToken(prof, cfg)
 		if r.token == "" {
-			log.Warn("admin's profile has no Pushover application token and the server has no shared one", "user_id", r.admin.UserID)
+			log.Warn("admin's profile has no Pushover application token and the server has no shared one", "user_id", id)
+			skipped[id] = true
 			continue
 		}
 		kept = append(kept, r)
@@ -275,11 +446,40 @@ func (p *Plugin) dropHandled(ctx context.Context, log *slog.Logger, candidates [
 	return kept, again, nil
 }
 
+// fanOut sends every recipient's alert at once and records the ones that
+// are done. It reports whether any could go through on a retry.
+func (p *Plugin) fanOut(ctx context.Context, log *slog.Logger, recipients []*recipient, at time.Time) (retry bool) {
+	var handled []string
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, r := range recipients {
+		wg.Go(func() {
+			done, again := p.sendAdminAlert(ctx, log, r, at)
+			mu.Lock()
+			defer mu.Unlock()
+			if done && r.key != "" {
+				handled = append(handled, r.key)
+			}
+			retry = retry || again
+		})
+	}
+	wg.Wait()
+
+	if len(handled) > 0 {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
+		if err := p.handled.RecordMany(rctx, handled); err != nil {
+			log.Warn("could not record handled admin alerts; a repeat may be sent twice", "error", err)
+		}
+		cancel()
+	}
+	return retry
+}
+
 // sendAdminAlert sends one admin's alert. done means it was sent or
 // rejected for good; again means a retry could get it through.
-func (p *Plugin) sendAdminAlert(ctx context.Context, log *slog.Logger, pb playback, r *recipient) (done, again bool) {
+func (p *Plugin) sendAdminAlert(ctx context.Context, log *slog.Logger, r *recipient, at time.Time) (done, again bool) {
 	log = log.With("user_id", r.admin.UserID, "alert", r.kind)
-	msg := adminMessage(r.profile, r.admin.alert(r.kind), pb.vars(), pb.At)
+	msg := adminMessage(r.profile, r.admin.alert(r.kind), r.vars, at)
 	msg.Token = r.token
 	if err := p.pushover.Send(ctx, msg); err != nil {
 		var perr *pushoverError
@@ -326,261 +526,6 @@ func waitForHost[T any](ctx context.Context, fn func() (T, error)) (T, error) {
 		}
 		if err := sleepCtx(ctx, 250*time.Millisecond); err != nil {
 			return v, err
-		}
-	}
-}
-
-// throttleStore keeps noise-control state in the "throttle" instance state
-// key: recent sessions by user and show (for collapsing binges, and to
-// remember a stream's location and method for its stop alert) and the last
-// alert per admin, user and type (for cooldowns). It's shared by every API
-// server; two servers handling events for the same user at once can each
-// send, which only costs an extra alert.
-type throttleStore struct {
-	state stateBackend
-	now   func() time.Time
-	// mu makes this process's read-decide-write of the key atomic.
-	mu sync.Mutex
-}
-
-const (
-	throttleKey          = "throttle"
-	maxThrottleSessions  = 2000
-	maxThrottleCooldowns = 4000
-)
-
-func newThrottleStore(state stateBackend) *throttleStore {
-	return &throttleStore{state: state, now: time.Now}
-}
-
-type throttleState struct {
-	Sessions  map[string]*sessionMark `json:"sessions"`
-	Cooldowns map[string]cooldownMark `json:"cooldowns"`
-}
-
-// sessionMark is what noise control remembers about one playback session.
-type sessionMark struct {
-	UserID string `json:"user_id"`
-	Show   string `json:"show"`
-	// Started is set once the session's start event was seen.
-	Started bool      `json:"started,omitempty"`
-	Start   time.Time `json:"start,omitzero"`
-	End     time.Time `json:"end,omitzero"`
-	// Location and Method come from Silo's live session row, so a stop
-	// (whose history entry lacks them) can still be filtered.
-	Location string `json:"location,omitempty"`
-	Method   string `json:"method,omitempty"`
-	// Device is the client label ("Living Room TV"), also missing from
-	// history entries.
-	Device string `json:"device,omitempty"`
-}
-
-// cooldownMark is the last alert of one type about one user to one admin.
-// Event is the alert's handled-event ID, so a retry of the same event isn't
-// held back by its own mark.
-type cooldownMark struct {
-	At    time.Time `json:"at"`
-	Event string    `json:"event,omitempty"`
-}
-
-// active reports whether the session was playing at, or stopped less than
-// window before, the given time.
-func (m *sessionMark) active(at time.Time, window time.Duration) bool {
-	start := m.Start
-	if start.IsZero() {
-		start = m.End
-	}
-	if start.After(at) {
-		return false // it began after this event, which arrived late
-	}
-	if m.End.IsZero() {
-		return at.Sub(start) < liveSessionTTL
-	}
-	return at.Sub(m.End) < window
-}
-
-func (t *throttleStore) read(ctx context.Context) (*throttleState, []byte, error) {
-	st := &throttleState{Sessions: map[string]*sessionMark{}, Cooldowns: map[string]cooldownMark{}}
-	raw, found, err := t.state.Read(ctx, throttleKey)
-	if err != nil {
-		return nil, nil, err
-	}
-	if found && json.Unmarshal(raw, st) != nil {
-		// Damaged state only costs noise control; start over.
-		st = &throttleState{}
-	}
-	if st.Sessions == nil {
-		st.Sessions = map[string]*sessionMark{}
-	}
-	if st.Cooldowns == nil {
-		st.Cooldowns = map[string]cooldownMark{}
-	}
-	return st, raw, nil
-}
-
-// decide applies each recipient's noise mode to pb, records the event in the
-// noise-control state, and returns the recipients to send to. A stop is
-// first filled in with the location and method its start recorded, and the
-// filters are checked again with them.
-func (t *throttleStore) decide(ctx context.Context, log *slog.Logger, pb *playback, candidates []*recipient) ([]*recipient, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	st, raw, err := t.read(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	if m := st.Sessions[pb.SessionID]; m != nil && pb.Event == eventSessionStopped {
-		if m.Location != "" {
-			pb.Location = m.Location
-		}
-		if pb.Method == "" {
-			pb.Method = m.Method
-		}
-		if pb.ClientLabel == "" {
-			pb.ClientLabel = m.Device
-		}
-	}
-
-	var out []*recipient
-	for _, r := range candidates {
-		if pb.Event == eventSessionStopped && !r.admin.Filters.match(*pb) {
-			continue
-		}
-		if st.suppressed(*pb, r) {
-			continue
-		}
-		if at, _ := adminAlertTypeByKey(r.kind); at.NoiseControlled && r.admin.Noise.Mode == noiseCooldown {
-			ck := cooldownKey(r.admin.UserID, pb.UserID, r.kind)
-			if prev, ok := st.Cooldowns[ck]; !ok || !pb.At.Before(prev.At) {
-				st.Cooldowns[ck] = cooldownMark{At: pb.At, Event: r.key}
-			}
-		}
-		out = append(out, r)
-	}
-
-	st.note(*pb)
-	st.prune(t.now())
-	next, err := json.Marshal(st)
-	if err == nil && string(next) != string(raw) {
-		err = t.state.Write(ctx, throttleKey, next)
-	}
-	if err != nil {
-		// Sending still beats dropping the alerts; noise control just
-		// won't remember this event.
-		log.Warn("could not save alert noise-control state", "error", err)
-	}
-	return out, nil
-}
-
-func cooldownKey(adminID int, userID, kind string) string {
-	return strconv.Itoa(adminID) + "|" + userID + "|" + kind
-}
-
-// suppressed reports whether r's noise mode holds back pb.
-func (st *throttleState) suppressed(pb playback, r *recipient) bool {
-	t, _ := adminAlertTypeByKey(r.kind)
-	if !t.NoiseControlled {
-		return false
-	}
-	window := r.admin.window()
-	switch r.admin.Noise.Mode {
-	case noiseCooldown:
-		prev, ok := st.Cooldowns[cooldownKey(r.admin.UserID, pb.UserID, r.kind)]
-		if !ok || (r.key != "" && prev.Event == r.key) {
-			return false
-		}
-		gap := pb.At.Sub(prev.At)
-		return gap < window && gap > -window
-	case noiseBinge:
-		return st.inBinge(pb, window)
-	}
-	return false
-}
-
-// inBinge reports whether pb continues a binge: the same user played the
-// same show in another session that is still playing or stopped less than
-// window ago, or this is a later event of a session whose start was seen.
-// The session's own start is left out, so a retry of a start decides the
-// same way as the first try.
-func (st *throttleState) inBinge(pb playback, window time.Duration) bool {
-	show := pb.showKey()
-	for id, m := range st.Sessions {
-		if m.UserID != pb.UserID || m.Show != show {
-			continue
-		}
-		if id == pb.SessionID {
-			if pb.Event != eventSessionStarted && m.Started {
-				return true
-			}
-			continue
-		}
-		if m.active(pb.At, window) {
-			return true
-		}
-	}
-	return false
-}
-
-// note records pb in the session marks. Every change is idempotent, so a
-// retried event leaves the same state.
-func (st *throttleState) note(pb playback) {
-	m := st.Sessions[pb.SessionID]
-	if m == nil {
-		m = &sessionMark{UserID: pb.UserID, Show: pb.showKey()}
-		st.Sessions[pb.SessionID] = m
-	}
-	switch pb.Event {
-	case eventSessionStarted:
-		m.Started = true
-		m.Start = pb.At
-	case eventSessionStopped:
-		m.End = pb.At
-	default:
-		if m.Start.IsZero() {
-			m.Start = cmp.Or(pb.StartedAt, pb.At)
-		}
-	}
-	if pb.FromRow {
-		m.Location, m.Method, m.Device = pb.Location, pb.Method, pb.ClientLabel
-	}
-}
-
-// prune drops marks too old to matter and caps the state's size.
-func (st *throttleState) prune(now time.Time) {
-	const keep = maxNoiseWindow * time.Minute
-	for id, m := range st.Sessions {
-		stale := now.Sub(m.Start) > liveSessionTTL // never seen stopping
-		if !m.End.IsZero() {
-			stale = now.Sub(m.End) > keep
-		}
-		if stale {
-			delete(st.Sessions, id)
-		}
-	}
-	for k, c := range st.Cooldowns {
-		if now.Sub(c.At) > keep {
-			delete(st.Cooldowns, k)
-		}
-	}
-	if n := len(st.Sessions) - maxThrottleSessions; n > 0 {
-		ids := slices.Collect(maps.Keys(st.Sessions))
-		lastSeen := func(m *sessionMark) time.Time {
-			if m.End.After(m.Start) {
-				return m.End
-			}
-			return m.Start
-		}
-		slices.SortFunc(ids, func(a, b string) int { return lastSeen(st.Sessions[a]).Compare(lastSeen(st.Sessions[b])) })
-		for _, id := range ids[:n] {
-			delete(st.Sessions, id)
-		}
-	}
-	if n := len(st.Cooldowns) - maxThrottleCooldowns; n > 0 {
-		keys := slices.Collect(maps.Keys(st.Cooldowns))
-		slices.SortFunc(keys, func(a, b string) int { return st.Cooldowns[a].At.Compare(st.Cooldowns[b].At) })
-		for _, k := range keys[:n] {
-			delete(st.Cooldowns, k)
 		}
 	}
 }

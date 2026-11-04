@@ -382,6 +382,12 @@ func (l *eventLog) read(ctx context.Context, key string) ([]string, error) {
 	return ids, nil
 }
 
+// eventIDList is one events/ bucket, oldest first.
+type eventIDList []string
+
+func (l *eventIDList) entries() int     { return len(*l) }
+func (l *eventIDList) dropOldest(n int) { *l = (*l)[min(n, len(*l)):] }
+
 // Seen reports whether id was recorded.
 func (l *eventLog) Seen(ctx context.Context, id string) (bool, error) {
 	entry := eventLogEntry(id)
@@ -462,7 +468,8 @@ func (l *eventLog) RecordMany(ctx context.Context, ids []string) error {
 		if len(stored) > eventLogPerBucket {
 			stored = stored[len(stored)-eventLogPerBucket:]
 		}
-		raw, err := json.Marshal(stored)
+		ids := eventIDList(stored)
+		raw, err := encodeCapped(&ids)
 		if err == nil {
 			err = l.state.Write(ctx, key, raw)
 		}

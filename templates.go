@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"html"
+	"maps"
 	"regexp"
 	"strings"
 )
@@ -161,8 +162,11 @@ func renderTemplate(tmpl string, vars map[string]string, escapeHTML bool) string
 		if known > 0 && filled == 0 {
 			continue
 		}
-		if rendered = tidyLine(rendered); rendered != "" {
-			out = append(out, rendered)
+		// A value can hold several lines (a list of streams); tidy each.
+		for _, sub := range strings.Split(rendered, "\n") {
+			if sub = tidyLine(sub); sub != "" {
+				out = append(out, sub)
+			}
 		}
 	}
 	return strings.TrimSpace(strings.Join(out, "\n"))
@@ -192,27 +196,55 @@ func tidyLine(line string) string {
 	return strings.TrimRight(line, danglingSeparators+"-")
 }
 
-// Admin playback alert types. Each is a switch in an admin's settings.
+// Admin alert types. Each is a switch in an admin's settings.
 const (
 	alertStreamStarted  = "stream.started"
 	alertStreamPaused   = "stream.paused" // paused and resumed
 	alertStreamStopped  = "stream.stopped"
 	alertPlaybackFailed = "playback.failed"
+
+	alertStreamsUser   = "streams.user"
+	alertStreamsServer = "streams.server"
+	alertBandwidth     = "bandwidth"
+	alertNewDevice     = "device.new"
+	alertNewIP         = "ip.new"
+
+	alertScanFailed = "scan.failed"
+	alertJobFailed  = "job.failed"
+)
+
+// Alert groups, shown as headings on the page.
+const (
+	groupPlayback = "playback"
+	groupWatchdog = "watchdog"
+	groupServer   = "server"
 )
 
 // adminAlertType describes one admin alert with its default wording.
 type adminAlertType struct {
 	Key            string   `json:"key"`
+	Group          string   `json:"group"`
 	Label          string   `json:"label"`
 	Description    string   `json:"description"`
 	DefaultTitle   string   `json:"default_title"`
 	DefaultMessage string   `json:"default_message"`
 	Placeholders   []string `json:"placeholders"`
-	// NoiseControlled alerts follow the admin's noise mode; playback
-	// failures always send.
+	// NoiseControlled alerts follow the admin's noise mode; the others
+	// always send.
 	NoiseControlled bool `json:"noise_controlled"`
+	// Limit is the number the alert compares against, for limit alerts.
+	Limit *alertLimit `json:"limit,omitempty"`
 	// Sample fills the placeholders for previews and test sends.
 	Sample map[string]string `json:"sample"`
+}
+
+// alertLimit describes a limit alert's number field. Key is its field in
+// AdminLimits.
+type alertLimit struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Unit  string `json:"unit"`
+	Max   int    `json:"max"`
 }
 
 func (t adminAlertType) defaults() AlertSettings {
@@ -241,48 +273,139 @@ var playbackSample = map[string]string{
 	"watched": "42m", "finished": "not finished", "end_reason": "Silo couldn't keep playing it",
 }
 
+// sampleWith is the playback sample plus extra values.
+func sampleWith(extra map[string]string) map[string]string {
+	s := maps.Clone(playbackSample)
+	maps.Copy(s, extra)
+	return s
+}
+
+const sampleStreams = "alice (Alice) · Severance S02E01 · Living Room TV · 8.0 Mbps\n" +
+	"alice (Alice) · Dune: Part Two · iPad · 12.0 Mbps\n" +
+	"bob · The Bear S03E02 · Chrome · 4.0 Mbps"
+
 var adminAlertTypes = []adminAlertType{
 	{
 		Key:             alertStreamStarted,
+		Group:           groupPlayback,
 		Label:           "Stream started",
 		Description:     "Someone starts playing something.",
 		DefaultTitle:    "{user_profile} started {title}",
 		DefaultMessage:  "{episode_title}\n{device} · {client}\n{location} · {method} · {video} · {bitrate}",
 		Placeholders:    withPlaceholders("video", "resolution", "bitrate", "hw_accel", "position", "progress"),
 		NoiseControlled: true,
+		Sample:          playbackSample,
 	},
 	{
 		Key:             alertStreamPaused,
+		Group:           groupPlayback,
 		Label:           "Paused / resumed",
 		Description:     "A stream is paused or resumed.",
 		DefaultTitle:    "{user_profile} {action} {title}",
 		DefaultMessage:  "{episode_title}\nAt {position} ({progress})\n{device}",
 		Placeholders:    withPlaceholders("action", "position", "duration", "progress"),
 		NoiseControlled: true,
+		Sample:          playbackSample,
 	},
 	{
 		Key:             alertStreamStopped,
+		Group:           groupPlayback,
 		Label:           "Stream stopped",
 		Description:     "A stream ends.",
 		DefaultTitle:    "{user_profile} stopped {title}",
 		DefaultMessage:  "{episode_title}\nWatched {watched}\n{progress} · {finished}\n{device}",
 		Placeholders:    withPlaceholders("watched", "position", "duration", "progress", "finished", "end_reason"),
 		NoiseControlled: true,
+		Sample:          playbackSample,
 	},
 	{
 		Key:            alertPlaybackFailed,
+		Group:          groupPlayback,
 		Label:          "Playback failed",
 		Description:    "Silo gave up on a stream, for example because the file is missing or the connection to the client failed.",
 		DefaultTitle:   "Playback failed for {user_profile}",
 		DefaultMessage: "{title}\n{episode_title}\n{device} · {client}\nAt {position}",
 		Placeholders:   withPlaceholders("position", "end_reason"),
+		Sample:         playbackSample,
 	},
-}
-
-func init() {
-	for i := range adminAlertTypes {
-		adminAlertTypes[i].Sample = playbackSample
-	}
+	{
+		Key:            alertStreamsUser,
+		Group:          groupWatchdog,
+		Label:          "Too many streams for one person",
+		Description:    "One account plays more streams at once than the limit. Sent once when the limit is crossed, and again only after they've dropped back to the limit or under.",
+		DefaultTitle:   "{user} is playing {count} streams",
+		DefaultMessage: "The limit is {limit}.\n{streams}",
+		Placeholders:   withPlaceholders("count", "limit", "streams"),
+		Limit:          &alertLimit{Key: "user_streams", Label: "Alert when one account plays more than", Unit: "streams", Max: maxUserStreams},
+		Sample:         sampleWith(map[string]string{"count": "3", "limit": "2", "streams": sampleStreams}),
+	},
+	{
+		Key:            alertStreamsServer,
+		Group:          groupWatchdog,
+		Label:          "Too many streams on the server",
+		Description:    "More streams play at once, across everyone, than the limit. Sent once when the limit is crossed, and again only after it has dropped back to the limit or under.",
+		DefaultTitle:   "{count} streams playing",
+		DefaultMessage: "The limit is {limit}.\n{streams}",
+		Placeholders:   withPlaceholders("count", "limit", "streams"),
+		Limit:          &alertLimit{Key: "server_streams", Label: "Alert when more streams than this play at once", Unit: "streams", Max: maxServerStreams},
+		Sample:         sampleWith(map[string]string{"count": "3", "limit": "2", "streams": sampleStreams}),
+	},
+	{
+		Key:            alertBandwidth,
+		Group:          groupWatchdog,
+		Label:          "Bandwidth over the limit",
+		Description:    "The streams playing at once add up to more than the limit, by the bitrate Silo reports for each. Sent once when the limit is crossed, and again only after it has dropped back under.",
+		DefaultTitle:   "Streaming {total}",
+		DefaultMessage: "Over the limit of {limit}, across {count} streams.\n{streams}",
+		Placeholders:   withPlaceholders("total", "limit", "count", "streams"),
+		Limit:          &alertLimit{Key: "bandwidth_mbps", Label: "Alert when the total is over", Unit: "Mbps", Max: maxBandwidthMbps},
+		Sample:         sampleWith(map[string]string{"total": "24.0 Mbps", "limit": "20 Mbps", "count": "3", "streams": sampleStreams}),
+	},
+	{
+		Key:            alertNewDevice,
+		Group:          groupWatchdog,
+		Label:          "New device",
+		Description:    "Someone plays on a device their account hasn't used before. The first time the plugin sees an account it learns the devices Silo already knows for it, so you aren't told about those.",
+		DefaultTitle:   "New device for {user_profile}",
+		DefaultMessage: "{device} · {client}\n{location} · {ip}\nPlaying {title}",
+		Placeholders:   withPlaceholders(),
+		Sample:         playbackSample,
+	},
+	{
+		Key:            alertNewIP,
+		Group:          groupWatchdog,
+		Label:          "New IP address",
+		Description:    "Someone plays from a remote address their account hasn't used before. Local addresses are skipped, and IPv6 addresses count by network (/64), since phones change theirs often. The first time the plugin sees an account it learns the addresses Silo saw in the last 90 days.",
+		DefaultTitle:   "New IP address for {user_profile}",
+		DefaultMessage: "{ip} · {location}\n{device} · {client}\nPlaying {title}",
+		Placeholders:   withPlaceholders(),
+		Sample:         playbackSample,
+	},
+	{
+		Key:            alertScanFailed,
+		Group:          groupServer,
+		Label:          "Library scan failed",
+		Description:    "A library scan stops with an error.",
+		DefaultTitle:   "Scan failed: {library}",
+		DefaultMessage: "{error}\n{scan} · {path}",
+		Placeholders:   []string{"library", "error", "scan", "path", "trigger"},
+		Sample: map[string]string{
+			"library": "Movies", "error": "open /media/movies: input/output error", "scan": "Full scan",
+			"path": "/media/movies", "trigger": "Scheduled",
+		},
+	},
+	{
+		Key:            alertJobFailed,
+		Group:          groupServer,
+		Label:          "Job failed",
+		Description:    "A background job Silo runs for admins (a library refresh, catalog import or export, storage move and the like) fails.",
+		DefaultTitle:   "Job failed: {job}",
+		DefaultMessage: "{error}\n{details}",
+		Placeholders:   []string{"job", "error", "details"},
+		Sample: map[string]string{
+			"job": "Library refresh", "error": "metadata provider timed out", "details": "Refreshed 120 of 480 items",
+		},
+	},
 }
 
 // adminAlertTypeByKey returns an alert type, or false for an unknown key.
@@ -293,4 +416,11 @@ func adminAlertTypeByKey(key string) (adminAlertType, bool) {
 		}
 	}
 	return adminAlertType{}, false
+}
+
+// isPlaybackAlert reports whether an alert is about one stream's playback,
+// which the playback filters and the library filter apply to.
+func isPlaybackAlert(key string) bool {
+	t, _ := adminAlertTypeByKey(key)
+	return t.Group == groupPlayback
 }

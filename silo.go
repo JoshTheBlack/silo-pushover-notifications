@@ -37,6 +37,7 @@ type siloClient struct {
 	mu    sync.Mutex
 	cache map[int]cachedProfiles
 	users map[int]cachedUser
+	libs  map[string]cachedLibraries
 }
 
 // cachedProfiles is one account's profile list, or the key error that
@@ -70,6 +71,7 @@ func newSiloClient() *siloClient {
 		now:     time.Now,
 		cache:   map[int]cachedProfiles{},
 		users:   map[int]cachedUser{},
+		libs:    map[string]cachedLibraries{},
 	}
 }
 
@@ -78,6 +80,7 @@ func (c *siloClient) Invalidate() {
 	c.mu.Lock()
 	c.cache = map[int]cachedProfiles{}
 	c.users = map[int]cachedUser{}
+	c.libs = map[string]cachedLibraries{}
 	c.mu.Unlock()
 }
 
@@ -163,6 +166,164 @@ func (c *siloClient) Users(ctx context.Context, baseURL, apiKey string) ([]siloU
 		cursor = page.Page.NextCursor
 	}
 	return all, nil
+}
+
+// pageInfo is Silo's cursor state on a collection.
+type pageInfo struct {
+	NextCursor string `json:"next_cursor"`
+	HasMore    bool   `json:"has_more"`
+}
+
+// next returns the cursor for the following page, or "" on the last one.
+func (p *pageInfo) next() string {
+	if p == nil || !p.HasMore {
+		return ""
+	}
+	return p.NextCursor
+}
+
+// Sessions lists every live playback session (GET /api/v2/admin/sessions),
+// following the pages. Not cached: the watchdog recounts before each check.
+func (c *siloClient) Sessions(ctx context.Context, baseURL, apiKey string) ([]adminSession, error) {
+	if apiKey == "" {
+		return nil, errSiloKeyMissing
+	}
+	var all []adminSession
+	cursor := ""
+	for range 25 {
+		path := "/api/v2/admin/sessions?limit=200"
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		var page struct {
+			Items []adminSession `json:"items"`
+			Page  *pageInfo      `json:"page"`
+		}
+		if err := c.get(ctx, baseURL, apiKey, path, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Items...)
+		if cursor = page.Page.next(); cursor == "" {
+			return all, nil
+		}
+	}
+	return nil, errors.New("Silo listed too many live sessions")
+}
+
+// UserDevices lists the device IDs Silo knows for an account
+// (GET /api/v2/admin/users/{id}/devices). A deleted account has none.
+func (c *siloClient) UserDevices(ctx context.Context, baseURL, apiKey, userID string) ([]string, error) {
+	if !accountIDPattern.MatchString(userID) {
+		return nil, nil
+	}
+	var body struct {
+		Items []struct {
+			DeviceID string `json:"device_id"`
+		} `json:"items"`
+	}
+	err := c.get(ctx, baseURL, apiKey, "/api/v2/admin/users/"+url.PathEscape(userID)+"/devices", &body)
+	if isNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, d := range body.Items {
+		if d.DeviceID != "" {
+			ids = append(ids, d.DeviceID)
+		}
+	}
+	return ids, nil
+}
+
+// UserRemoteIPs lists the remote addresses an account used in the last 90
+// days, most recent first, up to maxSeenPerUser
+// (GET /api/v2/admin/users/{id}/ips). A deleted account has none.
+func (c *siloClient) UserRemoteIPs(ctx context.Context, baseURL, apiKey, userID string) ([]string, error) {
+	if !accountIDPattern.MatchString(userID) {
+		return nil, nil
+	}
+	var body struct {
+		Items []struct {
+			ClientIP string `json:"client_ip"`
+			Location string `json:"location"`
+		} `json:"items"`
+	}
+	path := fmt.Sprintf("/api/v2/admin/users/%s/ips?days=90&limit=%d", url.PathEscape(userID), maxSeenPerUser)
+	err := c.get(ctx, baseURL, apiKey, path, &body)
+	if isNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ips []string
+	for _, ip := range body.Items {
+		if ip.ClientIP != "" && ip.Location == "remote" {
+			ips = append(ips, ip.ClientIP)
+		}
+	}
+	return ips, nil
+}
+
+// cachedLibraries is the libraries one catalog item is in.
+type cachedLibraries struct {
+	ids []string
+	at  time.Time
+}
+
+const (
+	libraryCacheTTL  = 30 * time.Minute
+	libraryCacheSize = 4096
+)
+
+// ContentLibraries returns the IDs of the libraries a catalog item is in
+// (GET /api/v2/admin/catalog/items?content_ids=...), cached for
+// libraryCacheTTL. An item the catalog doesn't list (an audiobook, or one no
+// longer present) is in none.
+func (c *siloClient) ContentLibraries(ctx context.Context, baseURL, apiKey, contentID string) ([]string, error) {
+	if apiKey == "" {
+		return nil, errSiloKeyMissing
+	}
+	if contentID == "" {
+		return nil, nil
+	}
+	c.mu.Lock()
+	if cached, ok := c.libs[contentID]; ok && c.now().Sub(cached.at) < libraryCacheTTL {
+		c.mu.Unlock()
+		return cached.ids, nil
+	}
+	c.mu.Unlock()
+
+	var body struct {
+		Items []struct {
+			ContentID  string   `json:"content_id"`
+			LibraryIDs []string `json:"library_ids"`
+		} `json:"items"`
+	}
+	path := "/api/v2/admin/catalog/items?limit=1&content_ids=" + url.QueryEscape(contentID)
+	if err := c.get(ctx, baseURL, apiKey, path, &body); err != nil {
+		return nil, err
+	}
+	ids := []string{}
+	for _, item := range body.Items {
+		if item.ContentID == contentID {
+			ids = item.LibraryIDs
+		}
+	}
+	c.mu.Lock()
+	if len(c.libs) >= libraryCacheSize {
+		c.libs = map[string]cachedLibraries{}
+	}
+	c.libs[contentID] = cachedLibraries{ids: ids, at: c.now()}
+	c.mu.Unlock()
+	return ids, nil
+}
+
+func isNotFound(err error) bool {
+	var serr *siloStatusError
+	return errors.As(err, &serr) && serr.Status == http.StatusNotFound
 }
 
 // AccountProfiles lists the profiles of one Silo account

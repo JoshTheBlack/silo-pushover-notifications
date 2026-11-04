@@ -707,6 +707,9 @@ func adminSettingsView(s *AdminSettings) *AdminSettings {
 	if v.Filters.MediaTypes == nil {
 		v.Filters.MediaTypes = []string{}
 	}
+	if v.Filters.Libraries == nil {
+		v.Filters.Libraries = []string{}
+	}
 	return v
 }
 
@@ -735,12 +738,22 @@ func (p *Plugin) handleGetAdminAlerts(ctx context.Context, a *adminViewer) *plug
 	if err != nil {
 		return storeError(p, err)
 	}
+	// Libraries for the library filter; the page keeps saved ones it can't
+	// name.
+	libs, err := p.libraries(ctx)
+	if err != nil {
+		p.logger.Warn("could not list Silo's libraries for the library filter", "error", err)
+	}
+	if libs == nil {
+		libs = []siloLibrary{}
+	}
 	out := map[string]any{
 		"configured":     found,
 		"settings":       adminSettingsView(settings),
 		"alert_types":    adminAlertTypes,
 		"noise_modes":    noiseModes,
 		"media_types":    mediaTypeOptions,
+		"libraries":      libs,
 		"sounds":         builtinSounds,
 		"pushover_ready": ready,
 	}

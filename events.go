@@ -62,17 +62,21 @@ type eventServer struct {
 // everything else (sent, ignored, or rejected for good) is acknowledged.
 func (s *eventServer) HandleEvent(ctx context.Context, req *pluginv1.HandleEventRequest) (*pluginv1.HandleEventResponse, error) {
 	name := req.GetEventName()
-	if (name != eventNotificationCreated && !isSessionEvent(name)) || req.GetPayload() == nil {
+	if (name != eventNotificationCreated && !isSessionEvent(name) && !isServerEvent(name)) || req.GetPayload() == nil {
 		return &pluginv1.HandleEventResponse{}, nil
 	}
 	raw, err := json.Marshal(req.GetPayload().AsMap())
 	if err != nil {
 		return &pluginv1.HandleEventResponse{}, nil
 	}
-	if isSessionEvent(name) {
+	if isSessionEvent(name) || isServerEvent(name) {
 		ctx, cancel := context.WithTimeout(ctx, s.plugin.eventTimeout)
 		defer cancel()
-		if err := s.plugin.handlePlaybackEvent(ctx, req.GetEventId(), name, raw); err != nil {
+		handle := s.plugin.handlePlaybackEvent
+		if isServerEvent(name) {
+			handle = s.plugin.handleServerEvent
+		}
+		if err := handle(ctx, req.GetEventId(), name, raw); err != nil {
 			return nil, err
 		}
 		return &pluginv1.HandleEventResponse{}, nil

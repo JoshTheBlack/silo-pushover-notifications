@@ -28,7 +28,8 @@ type Plugin struct {
 	logger   *slog.Logger
 	store    *profileStore
 	admins   *adminStore
-	throttle *throttleStore
+	watch    *watchStore // live sessions, noise control and limit marks
+	seen     *seenStore  // known devices and addresses per account
 	pushover *pushoverClient
 	silo     *siloClient
 	fetch    *http.Client // poster downloads
@@ -62,6 +63,12 @@ type Plugin struct {
 	// ResolveCatalogImageURLs).
 	resolveImagesFn func(ctx context.Context, paths []string, variant string) (map[string]string, error)
 
+	// listLibrariesFn lists Silo's libraries (the host's ListLibraries).
+	listLibrariesFn func(ctx context.Context) ([]siloLibrary, error)
+	libsMu          sync.Mutex
+	libsList        []siloLibrary
+	libsAt          time.Time
+
 	// eventTimeout bounds one HandleEvent call. Silo gives each attempt 10 s.
 	eventTimeout time.Duration
 	// posterTimeout bounds the poster lookup and download for one message.
@@ -78,7 +85,8 @@ func newPlugin(logger *slog.Logger, state stateBackend) *Plugin {
 		logger:            logger,
 		store:             newProfileStore(state),
 		admins:            newAdminStore(state),
-		throttle:          newThrottleStore(state),
+		watch:             newWatchStore(state),
+		seen:              newSeenStore(state),
 		pushover:          newPushoverClient(),
 		silo:              newSiloClient(),
 		keys:              newKeyAdmin(),
@@ -86,6 +94,7 @@ func newPlugin(logger *slog.Logger, state stateBackend) *Plugin {
 		handled:           newEventLog(state),
 		hostInfoFn:        sdkHostInfo,
 		resolveImagesFn:   sdkResolveImages,
+		listLibrariesFn:   sdkListLibraries,
 		setGlobalConfigFn: sdkSetGlobalConfig,
 		eventTimeout:      defaultEventTimeout,
 		posterTimeout:     defaultPosterTimeout,
@@ -139,6 +148,24 @@ func sdkResolveImages(ctx context.Context, paths []string, variant string) (map[
 		return nil, errHostUnavailable
 	}
 	return h.ResolveCatalogImageURLs(ctx, paths, variant)
+}
+
+func sdkListLibraries(ctx context.Context) ([]siloLibrary, error) {
+	h := sdkruntime.Host()
+	if h == nil {
+		return nil, errHostUnavailable
+	}
+	libs, err := h.ListLibraries(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]siloLibrary, 0, len(libs))
+	for _, l := range libs {
+		if l.GetId() != "" {
+			out = append(out, siloLibrary{ID: l.GetId(), Name: l.GetName()})
+		}
+	}
+	return out, nil
 }
 
 func sdkSetGlobalConfig(ctx context.Context, key string, value map[string]any) error {

@@ -146,6 +146,16 @@ type harness struct {
 	// built from testdata/admin_user.json. userCalls counts lookups by ID.
 	accounts  map[string]fakeAccount
 	userCalls map[string]int
+	// live is the fake Silo's live session list (AdminPlaybackSession rows);
+	// devices and ips are each account's known device IDs and addresses
+	// (ips as AdminUserIP rows); catalog maps content IDs to library IDs.
+	// calls counts requests by path. failPaths answer 502.
+	live      []map[string]any
+	devices   map[string][]string
+	ips       map[string][]map[string]any
+	catalog   map[string][]string
+	calls     map[string]int
+	failPaths map[string]bool
 }
 
 type fakeAccount struct {
@@ -164,6 +174,9 @@ const (
 	testLegacyKey     = "sa_legacy_full_access_secret"
 )
 
+// testNow is the time the fixtures' events happen around.
+var testNow = time.Date(2026, 11, 3, 20, 0, 0, 0, time.UTC)
+
 // testProfileNames are user 7's profiles in the fake Silo. p1 is primary. p2
 // and p3 share a name, which 0.2.0's name matching mixed up.
 var testProfileNames = map[string]string{"p1": "Josh", "p2": "Kid", "p3": "Kid"}
@@ -176,12 +189,13 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(pushoverSrv.Close)
 
 	slowPoster := make(chan struct{})
-	h := &harness{pushover: fp, pushURL: pushoverSrv.URL, userCalls: map[string]int{}, accounts: map[string]fakeAccount{
-		"7":  {"josh", "admin", true},
-		"9":  {"sam", "admin", true},
-		"12": {"alice", "user", true},
-		"13": {"bob", "user", true},
-	}}
+	h := &harness{pushover: fp, pushURL: pushoverSrv.URL, userCalls: map[string]int{}, devices: map[string][]string{},
+		ips: map[string][]map[string]any{}, catalog: map[string][]string{}, calls: map[string]int{}, failPaths: map[string]bool{}, accounts: map[string]fakeAccount{
+			"7":  {"josh", "admin", true},
+			"9":  {"sam", "admin", true},
+			"12": {"alice", "user", true},
+			"13": {"bob", "user", true},
+		}}
 	silo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/poster.jpg", "/card.jpg":
@@ -198,8 +212,13 @@ func newHarness(t *testing.T) *harness {
 		h.siloCalls.Add(1)
 		h.siloMu.Lock()
 		h.siloAuth = append(h.siloAuth, r.Header.Get("Authorization"))
+		h.calls[r.URL.Path]++
+		failing := h.failPaths[r.URL.Path]
 		h.siloMu.Unlock()
 		switch {
+		case failing:
+			w.WriteHeader(http.StatusBadGateway)
+			return
 		case r.Method != http.MethodGet:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		case h.siloDown.Load():
@@ -210,6 +229,36 @@ func newHarness(t *testing.T) *harness {
 			w.WriteHeader(http.StatusUnauthorized)
 		case r.URL.Path == "/api/v2/admin/users/7/profiles":
 			_, _ = io.WriteString(w, `{"items":[{"id":"p1","name":"Josh"},{"id":"p2","name":"Kid"},{"id":"p3","name":"Kid"}]}`)
+		case r.URL.Path == "/api/v2/admin/sessions":
+			h.siloMu.Lock()
+			items := append([]map[string]any{}, h.live...)
+			h.siloMu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": items, "page": map[string]any{"has_more": false}})
+		case r.URL.Path == "/api/v2/admin/catalog/items":
+			id := r.URL.Query().Get("content_ids")
+			h.siloMu.Lock()
+			libs, ok := h.catalog[id]
+			h.siloMu.Unlock()
+			items := []map[string]any{}
+			if ok {
+				items = append(items, map[string]any{"content_id": id, "type": "episode", "title": "x", "library_ids": libs, "added_at": "2026-01-01T00:00:00Z", "versions": []any{}})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
+		case strings.HasPrefix(r.URL.Path, "/api/v2/admin/users/") && strings.HasSuffix(r.URL.Path, "/devices"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v2/admin/users/"), "/devices")
+			h.siloMu.Lock()
+			items := []map[string]any{}
+			for _, d := range h.devices[id] {
+				items = append(items, map[string]any{"device_id": d, "device_name": d, "device_platform": "ios", "last_seen_at": nil, "last_updated": nil, "override_count": 0, "profiles": []any{}})
+			}
+			h.siloMu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
+		case strings.HasPrefix(r.URL.Path, "/api/v2/admin/users/") && strings.HasSuffix(r.URL.Path, "/ips"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v2/admin/users/"), "/ips")
+			h.siloMu.Lock()
+			items := append([]map[string]any{}, h.ips[id]...)
+			h.siloMu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": items, "page": map[string]any{"has_more": false}})
 		case r.URL.Path == "/api/v2/admin/users":
 			h.siloMu.Lock()
 			items := []map[string]any{}
@@ -258,6 +307,13 @@ func (h *harness) newPlugin(state stateBackend) *Plugin {
 	}
 	p.resolveImagesFn = func(context.Context, []string, string) (map[string]string, error) {
 		return nil, errHostUnavailable
+	}
+	// Noise control, the tracker and the seen sets prune against the clock;
+	// pin it to the fixtures' evening so the tests don't age.
+	p.watch.now = func() time.Time { return testNow }
+	p.seen.now = func() time.Time { return testNow }
+	p.listLibrariesFn = func(context.Context) ([]siloLibrary, error) {
+		return []siloLibrary{{ID: "2", Name: "TV Shows"}, {ID: "1", Name: "Movies"}}, nil
 	}
 	p.setConfig(adminConfig{MonitorAPIKey: testMonitorKey, DefaultAppToken: testAppToken})
 	return p

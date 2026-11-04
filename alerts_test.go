@@ -612,7 +612,7 @@ func TestAdminAlertsEndpoints(t *testing.T) {
 			t.Fatalf("%s is on by default", key)
 		}
 	}
-	if types := out["alert_types"].([]any); len(types) != 4 {
+	if types := out["alert_types"].([]any); len(types) != len(adminAlertTypes) {
 		t.Fatalf("alert_types = %v", types)
 	}
 
@@ -771,18 +771,23 @@ func TestAdminStoreIsSharedAcrossServers(t *testing.T) {
 
 func TestThrottleStatePrunesOldEntries(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
-	st := &throttleState{Sessions: map[string]*sessionMark{
+	sessions := sessionTable{
 		"old-stop": {End: now.Add(-25 * time.Hour)},
 		"new-stop": {End: now.Add(-time.Hour)},
 		"old-live": {Start: now.Add(-13 * time.Hour)},
 		"new-live": {Start: now.Add(-time.Hour)},
-	}, Cooldowns: map[string]cooldownMark{"old": {At: now.Add(-25 * time.Hour)}, "new": {At: now}}}
-	st.prune(now)
-	if _, ok := st.Sessions["new-stop"]; !ok || len(st.Sessions) != 2 || st.Sessions["new-live"] == nil {
-		t.Fatalf("sessions after prune = %v", st.Sessions)
 	}
-	if len(st.Cooldowns) != 1 {
-		t.Fatalf("cooldowns after prune = %v", st.Cooldowns)
+	sessions.prune(now)
+	if _, ok := sessions["new-stop"]; !ok || len(sessions) != 2 || sessions["new-live"] == nil {
+		t.Fatalf("sessions after prune = %v", sessions)
+	}
+	st := &throttleState{
+		Cooldowns: map[string]cooldownMark{"old": {At: now.Add(-25 * time.Hour)}, "new": {At: now}},
+		Over:      map[string]cooldownMark{"old": {At: now.Add(-8 * 24 * time.Hour)}, "new": {At: now.Add(-time.Hour)}},
+	}
+	st.prune(now)
+	if len(st.Cooldowns) != 1 || len(st.Over) != 1 {
+		t.Fatalf("after prune: cooldowns %v, limit marks %v", st.Cooldowns, st.Over)
 	}
 }
 

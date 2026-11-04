@@ -31,6 +31,7 @@ type AdminSettings struct {
 	Alerts    map[string]AlertSettings `json:"alerts"`
 	Filters   AdminFilters             `json:"filters"`
 	Noise     NoiseSettings            `json:"noise"`
+	Limits    AdminLimits              `json:"limits"`
 	UpdatedAt time.Time                `json:"updated_at"`
 }
 
@@ -46,7 +47,8 @@ type AlertSettings struct {
 }
 
 // AdminFilters narrow which playback an admin hears about. They apply to all
-// playback alerts.
+// playback alerts; IgnoreUsers also applies to the watchdog alerts about one
+// account (its stream limit, new devices and new addresses).
 type AdminFilters struct {
 	// IgnoreUsers are Silo account IDs whose playback is never alerted.
 	IgnoreUsers    []string `json:"ignore_users"`
@@ -54,6 +56,42 @@ type AdminFilters struct {
 	OnlyTranscodes bool     `json:"only_transcodes"`
 	// MediaTypes limits alerts to these media types; empty means all.
 	MediaTypes []string `json:"media_types"`
+	// Libraries limits alerts to items in these Silo libraries (IDs);
+	// empty means all. An item Silo's catalog can't place (audiobooks, for
+	// one) matches none.
+	Libraries []string `json:"libraries"`
+}
+
+// AdminLimits are the numbers the limit alerts compare against. Zero means
+// not set; a limit alert can only be switched on with its limit set.
+type AdminLimits struct {
+	// UserStreams: alert when one account plays more streams than this.
+	UserStreams int `json:"user_streams"`
+	// ServerStreams: alert when more streams than this play at once.
+	ServerStreams int `json:"server_streams"`
+	// BandwidthMbps: alert when the streams' bitrates add up to more.
+	BandwidthMbps int `json:"bandwidth_mbps"`
+	// BandwidthRemoteOnly counts only remote streams toward the bandwidth.
+	BandwidthRemoteOnly bool `json:"bandwidth_remote_only"`
+}
+
+const (
+	maxUserStreams   = 100
+	maxServerStreams = 1000
+	maxBandwidthMbps = 100000
+)
+
+// limit returns the limit a limit alert uses.
+func (l AdminLimits) limit(kind string) int {
+	switch kind {
+	case alertStreamsUser:
+		return l.UserStreams
+	case alertStreamsServer:
+		return l.ServerStreams
+	case alertBandwidth:
+		return l.BandwidthMbps
+	}
+	return 0
 }
 
 // NoiseSettings is how an admin wants repeated start, pause/resume and stop
@@ -119,6 +157,7 @@ func (s *AdminSettings) clone() *AdminSettings {
 	c.Alerts = maps.Clone(s.Alerts)
 	c.Filters.IgnoreUsers = slices.Clone(s.Filters.IgnoreUsers)
 	c.Filters.MediaTypes = slices.Clone(s.Filters.MediaTypes)
+	c.Filters.Libraries = slices.Clone(s.Filters.Libraries)
 	return &c
 }
 
@@ -127,10 +166,12 @@ type adminInput struct {
 	Alerts  map[string]AlertSettings `json:"alerts"`
 	Filters AdminFilters             `json:"filters"`
 	Noise   NoiseSettings            `json:"noise"`
+	Limits  AdminLimits              `json:"limits"`
 }
 
 var (
 	accountIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	libraryIDPattern = accountIDPattern
 	mediaTypePattern = regexp.MustCompile(`^[a-z_]{1,32}$`)
 )
 
@@ -162,7 +203,7 @@ func applyAdminInput(userID int, profileID, username string, in adminInput) (*Ad
 
 	f := in.Filters
 	s.Filters.OnlyRemote, s.Filters.OnlyTranscodes = f.OnlyRemote, f.OnlyTranscodes
-	if len(f.IgnoreUsers) > 500 || len(f.MediaTypes) > 20 {
+	if len(f.IgnoreUsers) > 500 || len(f.MediaTypes) > 20 || len(f.Libraries) > 200 {
 		return nil, bad("Too many filter entries.")
 	}
 	for _, id := range f.IgnoreUsers {
@@ -182,6 +223,36 @@ func applyAdminInput(userID int, profileID, username string, in adminInput) (*Ad
 		if !slices.Contains(s.Filters.MediaTypes, mt) {
 			s.Filters.MediaTypes = append(s.Filters.MediaTypes, mt)
 		}
+	}
+	for _, id := range f.Libraries {
+		id = strings.TrimSpace(id)
+		if !libraryIDPattern.MatchString(id) {
+			return nil, bad("A library to filter on isn't a valid Silo library ID.")
+		}
+		if !slices.Contains(s.Filters.Libraries, id) {
+			s.Filters.Libraries = append(s.Filters.Libraries, id)
+		}
+	}
+
+	s.Limits.BandwidthRemoteOnly = in.Limits.BandwidthRemoteOnly
+	for _, l := range []struct {
+		kind  string
+		value int
+		max   int
+		set   *int
+	}{
+		{alertStreamsUser, in.Limits.UserStreams, maxUserStreams, &s.Limits.UserStreams},
+		{alertStreamsServer, in.Limits.ServerStreams, maxServerStreams, &s.Limits.ServerStreams},
+		{alertBandwidth, in.Limits.BandwidthMbps, maxBandwidthMbps, &s.Limits.BandwidthMbps},
+	} {
+		t, _ := adminAlertTypeByKey(l.kind)
+		switch {
+		case l.value < 0 || l.value > l.max:
+			return nil, bad(fmt.Sprintf("%s: the limit must be between 1 and %d.", t.Label, l.max))
+		case l.value == 0 && s.Alerts[l.kind].Enabled:
+			return nil, bad(t.Label + ": set a limit, or switch the alert off.")
+		}
+		*l.set = l.value
 	}
 
 	switch in.Noise.Mode {
