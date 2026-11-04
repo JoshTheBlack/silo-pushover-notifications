@@ -7,150 +7,199 @@
   <style>
     :root {
       --bg: #0e1014; --surface: #161920; --surface-2: #1d212a; --border: #2a2f3a;
-      --text: #e7e9ee; --muted: #98a1b0; --accent: #3b8cff; --accent-text: #fff;
-      --ok: #3fb950; --warn: #d29922; --danger: #f06a6a; --focus: #7fb2ff;
+      --text: #e7e9ee; --muted: #a3abb8; --accent: #5b9dff; --accent-strong: #1f6fe5; --accent-text: #fff;
+      --ok: #3fb950; --warn: #e0a82e; --danger: #f06a6a; --focus: #7fb2ff; --sel: rgba(91,157,255,.16);
       --radius: 14px; color-scheme: dark;
     }
     :root[data-theme="light"] {
       --bg: #f5f6f8; --surface: #fff; --surface-2: #f0f2f5; --border: #dde1e7;
-      --text: #171a20; --muted: #5d6675; --accent: #1f6fe5; --ok: #1a7f37; --warn: #9a6700;
-      --danger: #c62828; --focus: #1f6fe5; color-scheme: light;
+      --text: #171a20; --muted: #5a6372; --accent: #1f6fe5; --accent-strong: #1f6fe5; --ok: #1a7f37; --warn: #9a6700;
+      --danger: #c62828; --focus: #1f6fe5; --sel: rgba(31,111,229,.10); color-scheme: light;
     }
     @media (prefers-color-scheme: light) {
       :root[data-theme="auto"] {
         --bg: #f5f6f8; --surface: #fff; --surface-2: #f0f2f5; --border: #dde1e7;
-        --text: #171a20; --muted: #5d6675; --accent: #1f6fe5; --ok: #1a7f37; --warn: #9a6700;
-        --danger: #c62828; --focus: #1f6fe5; color-scheme: light;
+        --text: #171a20; --muted: #5a6372; --accent: #1f6fe5; --accent-strong: #1f6fe5; --ok: #1a7f37; --warn: #9a6700;
+        --danger: #c62828; --focus: #1f6fe5; --sel: rgba(31,111,229,.10); color-scheme: light;
       }
     }
     * { box-sizing: border-box; }
-    body {
-      margin: 0; background: var(--bg); color: var(--text);
-      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    }
-    main { max-width: 760px; margin: 0 auto; padding: 24px 16px 120px; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
     a { color: var(--accent); }
-    .back { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); text-decoration: none; font-size: 14px; }
+    a:hover { color: var(--text); }
+    [hidden] { display: none !important; }
+    :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+    .shell { max-width: 1220px; margin: 0 auto; padding: 24px 24px 64px; display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
+    .rail { flex: 1 1 220px; max-width: 250px; display: flex; flex-direction: column; gap: 18px; position: sticky; top: 24px; }
+    .content { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+    @media (max-width: 760px) {
+      .shell { padding: 16px 16px 48px; gap: 18px; }
+      .rail { max-width: none; position: static; }
+      .navlist { flex-direction: row !important; flex-wrap: wrap; }
+      .navlist .nav { width: auto !important; }
+    }
+
+    .back { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); text-decoration: none; font-size: 14px; min-height: 32px; }
     .back:hover { color: var(--text); }
-    h1 { font-size: 26px; margin: 12px 0 4px; letter-spacing: -0.01em; }
-    h2 { font-size: 17px; margin: 0 0 4px; }
-    .lede { color: var(--muted); margin: 0 0 20px; }
-    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
-    .card > .sub { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
-    .notice { border-radius: var(--radius); padding: 14px 16px; margin-bottom: 16px; border: 1px solid var(--border); background: var(--surface); }
-    .notice.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
-    .notice.error { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); }
-    .notice strong { display: block; margin-bottom: 2px; }
-    .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
-    .tab { border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px; padding: 6px 14px; cursor: pointer; font: inherit; font-size: 14px; }
-    .tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
-    .tab .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); margin-left: 6px; vertical-align: middle; }
-    .field { margin-bottom: 16px; }
-    .field:last-child { margin-bottom: 0; }
-    .lbl { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
-    .help { color: var(--muted); font-size: 13px; margin-top: 6px; }
-    input[type="text"], input[type="password"], input[type="number"], input[type="time"], select, textarea {
-      width: 100%; background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
-      border-radius: 10px; padding: 9px 12px; font: inherit;
-    }
-    textarea { resize: vertical; min-height: 64px; }
-    input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, summary:focus-visible, .tab:focus-visible {
-      outline: 2px solid var(--focus); outline-offset: 2px;
-    }
-    .row { display: flex; gap: 8px; align-items: center; }
-    .row > input { flex: 1; min-width: 0; }
-    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-    @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
-    button.btn { font: inherit; font-size: 14px; font-weight: 600; border-radius: 10px; padding: 9px 16px; cursor: pointer; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); white-space: nowrap; }
-    button.btn:hover { border-color: var(--muted); }
-    button.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
-    button.btn.danger { color: var(--danger); }
-    button.btn:disabled { opacity: 0.55; cursor: default; }
-    button.link { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; font-size: 13px; cursor: pointer; }
-    .switch { display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
-    .switch input { appearance: none; flex: none; width: 38px; height: 22px; border-radius: 999px; background: var(--border); position: relative; cursor: pointer; margin: 1px 0 0; transition: background .15s; }
-    .switch input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
-    .switch input:checked { background: var(--accent); }
-    .switch input:checked::after { transform: translateX(16px); }
-    .switch .t { font-weight: 600; font-size: 14px; }
-    .switch .d { color: var(--muted); font-size: 13px; }
-    .checks { display: grid; gap: 12px; }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .logo { width: 36px; height: 36px; border-radius: 10px; background: var(--accent-strong); color: #fff; display: flex; align-items: center; justify-content: center; flex: none; }
+    .brand b { display: block; font-size: 18px; }
+    .brand span { font-size: 12px; color: var(--muted); }
+    .railLabel { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+    .navlist { display: flex; flex-direction: column; gap: 4px; }
+    .nav { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 0 12px; border-radius: 10px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 15px; cursor: pointer; text-align: left; }
+    .nav:hover { color: var(--text); }
+    .nav[aria-selected="true"] { background: var(--sel); color: var(--text); font-weight: 600; }
+    .nav .grow { flex-grow: 1; }
+    .badge { font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+    .railFoot { border-top: 1px solid var(--border); padding-top: 16px; display: flex; flex-direction: column; gap: 12px; font-size: 14px; }
+    .railFoot a { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; }
+    .meter { font-size: 12px; color: var(--muted); }
+    .meter .row { display: flex; justify-content: space-between; margin-bottom: 6px; }
+    .meter .row b { color: var(--text); }
+    .meter .track { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; }
+    .meter .fill { height: 6px; background: var(--ok); }
+    .meter.low .fill { background: var(--warn); }
+
+    .head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 8px 0; }
+    .head h1 { margin: 0; font-size: 24px; letter-spacing: -0.01em; }
+    .head p { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+    .saveRow { display: flex; align-items: center; gap: 12px; }
+    #saveMsg { font-size: 13px; color: var(--muted); }
+
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+    .card h2 { margin: 0; font-size: 16px; }
+    .cardHead { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; }
+    .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; }
+    .flexrow { display: flex; flex-wrap: wrap; gap: 4px 28px; align-items: center; }
+    .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .lbl { font-size: 13px; font-weight: 600; }
+    .help { color: var(--muted); font-size: 13px; }
+    .muted { color: var(--muted); }
     .status-ok { color: var(--ok); }
     .status-err { color: var(--danger); }
-    .type { border-top: 1px solid var(--border); padding: 16px 0; }
-    .type:first-of-type { border-top: 0; padding-top: 4px; }
-    .type:last-child { padding-bottom: 0; }
-    details > summary { cursor: pointer; color: var(--accent); font-size: 13px; margin: 10px 0 0 50px; list-style: none; width: fit-content; }
-    details > summary::-webkit-details-marker { display: none; }
-    details[open] > summary { margin-bottom: 12px; }
-    .editor { margin-left: 50px; }
-    @media (max-width: 640px) { .editor, details > summary { margin-left: 0; } }
-    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-    .chip { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 2px 7px; cursor: pointer; }
-    .chip:hover { border-color: var(--accent); }
-    .preview { margin-top: 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
-    .preview .pl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 6px; }
-    .preview .pt { font-weight: 600; }
-    .preview .pm { white-space: pre-wrap; overflow-wrap: anywhere; }
-    .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
-    .bar { position: fixed; left: 0; right: 0; bottom: 0; background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(8px); border-top: 1px solid var(--border); }
-    .bar .in { max-width: 760px; margin: 0 auto; padding: 12px 16px; display: flex; gap: 8px; align-items: center; }
-    .bar .msg { flex: 1; font-size: 14px; color: var(--muted); min-width: 0; }
-    .skeleton { height: 160px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); }
-    h3 { font-size: 15px; margin: 20px 0 8px; }
-    .badge { display: inline-block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; margin-left: 6px; vertical-align: middle; }
-    .keylist { list-style: none; margin: 0 0 4px; padding: 0; display: grid; gap: 4px; font-size: 14px; }
-    .muted { color: var(--muted); }
+
+    input[type="text"], input[type="password"], input[type="number"], input[type="time"], select, textarea {
+      width: 100%; background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+      border-radius: 10px; padding: 8px 10px; font: inherit; font-size: 14px; min-height: 40px;
+    }
+    textarea { resize: vertical; min-height: 64px; }
+    input.num { width: 84px; }
+    input[type="time"], select.auto { width: auto; }
+    .inline { display: inline-flex; gap: 8px; align-items: center; font-size: 14px; }
+
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font: inherit; font-size: 14px; cursor: pointer; white-space: nowrap; text-decoration: none; }
+    .btn:hover { border-color: var(--muted); }
+    .btn.primary { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--accent-text); font-weight: 600; }
+    .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+    .btn.ghost:hover { color: var(--text); }
+    .btn.icon { width: 40px; padding: 0; }
+    .btn.danger { color: var(--danger); }
+    .btn:disabled { opacity: .55; cursor: default; }
+    .link { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; font-size: 13px; cursor: pointer; }
+
+    .sw { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; font-size: 14px; min-height: 40px; }
+    .sw input { appearance: none; -webkit-appearance: none; width: 40px; height: 22px; border-radius: 999px; background: var(--border); position: relative; margin: 0; flex: none; cursor: pointer; }
+    .sw input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+    .sw input:checked { background: var(--accent-strong); }
+    .sw input:checked::after { left: 21px; }
+    .sw.sm { font-size: 13px; min-height: 32px; }
+
+    .pills { display: flex; flex-wrap: wrap; gap: 8px; }
+    .pill { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 12px; border: 1px solid var(--border); border-radius: 999px; font-size: 14px; cursor: pointer; background: var(--surface-2); }
+    .pill:has(input:checked) { border-color: var(--accent); background: var(--sel); }
+    .pill input { margin: 0; accent-color: var(--accent-strong); }
+
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 999px; padding: 3px 9px; cursor: pointer; }
+    .chip:hover { border-color: var(--accent); color: var(--text); }
+
+    .rows > .item { border-top: 1px solid var(--border); padding: 10px 0; }
+    .rows > .item:first-child { border-top: 0; padding-top: 0; }
+    .itemHead { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+    .itemHead .sw { flex-grow: 1; }
+    .meta { font-size: 13px; color: var(--muted); }
+
+    .editor { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 12px; padding: 16px; border-radius: 12px; background: var(--surface-2); }
+    .editor .col { display: flex; flex-direction: column; gap: 10px; }
+    .editor input, .editor select, .editor textarea { background: var(--surface); }
+    .preview { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+    .preview .pt { font-weight: 600; font-size: 14px; }
+    .preview .pm { font-size: 14px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+    .subtabs { display: inline-flex; gap: 4px; padding: 4px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); }
+    .subtab { min-height: 36px; padding: 0 16px; border-radius: 9px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; }
+    .subtab[aria-selected="true"] { background: var(--accent-strong); color: #fff; font-weight: 600; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
+    .dot.warn { background: var(--warn); }
+    .dot.off { background: var(--border); }
+
+    .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+    .tile { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface-2); }
+    .tile.open { border-color: var(--accent); background: var(--sel); }
+    .tile .top { display: flex; align-items: center; gap: 8px; }
+    .tile .top .sw { flex-grow: 1; min-width: 0; }
+    .tile .name { flex-grow: 1; font-size: 14px; min-height: 40px; display: inline-flex; align-items: center; }
+    .tile .meta { font-size: 12px; }
+    .tile label.inline { font-size: 13px; }
+    .tile input.num, .tile select { min-height: 34px; }
+
+    .modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+    .mode { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface-2); cursor: pointer; }
+    .mode:has(input:checked) { border-color: var(--accent); background: var(--sel); }
+    .mode input { margin: 3px 0 0; accent-color: var(--accent-strong); flex: none; }
+    .mode b { display: block; font-size: 14px; }
+    .mode span { font-size: 12px; color: var(--muted); }
+
+    .keyrow { display: flex; gap: 12px; align-items: center; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; }
+    .keyrow .grow { flex-grow: 1; }
+    .keyrow b { display: block; font-size: 14px; }
+    .keyrow small { font-size: 12px; color: var(--muted); }
+
+    .notice { border-radius: var(--radius); padding: 12px 16px; border: 1px solid var(--border); background: var(--surface); font-size: 14px; }
+    .notice strong { display: block; margin-bottom: 2px; }
+    .notice.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
+    .notice.error { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); }
     .notice.ok { border-color: color-mix(in srgb, var(--ok) 55%, var(--border)); }
     .notice ul { margin: 6px 0 0; padding-left: 20px; }
     .notice .actions { margin-top: 10px; }
-    .card .notice { margin: 16px 0 0; }
-    .narrow { max-width: 160px; }
-    .limit { margin: 10px 0 0 50px; display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; font-size: 14px; }
-    .limit input[type="number"] { width: 110px; }
-    .limit select, .limit input[type="time"] { width: auto; }
-    .times { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; margin: 12px 0 4px 50px; font-size: 14px; }
-    .times input[type="time"] { width: auto; }
-    @media (max-width: 640px) { .times { margin-left: 0; } }
-    .limit .switch { flex-basis: 100%; margin-top: 4px; }
-    @media (max-width: 640px) { .limit { margin-left: 0; } }
-    .nosw { margin-left: 50px; font-size: 14px; }
-    .nosw .t { font-weight: 600; }
-    .nosw .d { color: var(--muted); font-size: 13px; }
-    @media (max-width: 640px) { .nosw { margin-left: 0; } }
-    .setup pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; overflow: auto; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-    .setup ol { padding-left: 20px; margin: 8px 0; }
-    .group-sub { margin: -4px 0 4px; }
-    fieldset.field { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
-    fieldset.field legend { padding: 0; }
-    .pick { border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); padding: 6px 12px; max-height: 200px; overflow: auto; }
-    .pick.inline { max-height: none; display: flex; flex-wrap: wrap; gap: 0 20px; }
-    .pick label { display: flex; gap: 8px; align-items: center; padding: 5px 0; font-size: 14px; cursor: pointer; }
-    .choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; margin-bottom: 8px; }
-    .choice:has(input:checked) { border-color: var(--accent); }
-    .choice input { margin-top: 4px; accent-color: var(--accent); flex: none; }
-    .choice .t { font-weight: 600; font-size: 14px; }
-    .choice .d { color: var(--muted); font-size: 13px; }
-    details.plain > summary { margin: 12px 0 0; }
-    details.plain[open] > summary { margin-bottom: 12px; }
-    [hidden] { display: none !important; }
+    .skeleton { height: 160px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); }
+    details > summary { cursor: pointer; color: var(--accent); font-size: 14px; width: fit-content; }
+    pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; overflow: auto; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; }
+    ol.help { padding-left: 20px; margin: 8px 0 0; }
+    .dangerZone { display: flex; justify-content: flex-end; }
   </style>
 </head>
 <body>
-<main>
-  <a class="back" href="/">← Back to Silo</a>
-  <h1>Pushover</h1>
-  <p class="lede">Get your Silo notifications on your phone, tablet or desktop through <a href="https://pushover.net" target="_blank" rel="noopener">Pushover</a>.</p>
-  <div id="notice"></div>
-  <div id="app"><div class="skeleton"></div></div>
-  <div id="admin"></div>
-</main>
-<div class="bar" id="bar" hidden>
-  <div class="in">
-    <div class="msg" id="barMsg" role="status" aria-live="polite"></div>
-    <button class="btn danger" id="removeBtn" type="button" hidden>Remove</button>
-    <button class="btn primary" id="saveBtn" type="button">Save</button>
-  </div>
+<div class="shell" id="shell">
+  <nav class="rail" aria-label="Pushover settings">
+    <a class="back" href="/">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+      Back to Silo
+    </a>
+    <div class="brand">
+      <div class="logo"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></div>
+      <div><b>Pushover</b><span>Notifications for Silo</span></div>
+    </div>
+    <label class="railLabel" id="profilePick" hidden>Profile<select id="profileSelect"></select></label>
+    <div class="navlist" role="tablist" aria-orientation="vertical" id="navlist"></div>
+    <div class="railFoot" id="railFoot" hidden></div>
+  </nav>
+
+  <main class="content">
+    <div class="head">
+      <div><h1 id="tabTitle">Pushover</h1><p id="tabSub"></p></div>
+      <div class="saveRow"><span id="saveMsg" role="status" aria-live="polite"></span><button class="btn primary" type="button" id="saveBtn" hidden>Save</button></div>
+    </div>
+    <div id="notice"></div>
+    <div id="panel-account" role="tabpanel" hidden></div>
+    <div id="panel-mine" role="tabpanel" hidden></div>
+    <div id="panel-admin" role="tabpanel" hidden></div>
+    <div id="panel-keys" role="tabpanel" hidden></div>
+    <div id="loading"><div class="skeleton"></div></div>
+  </main>
 </div>
 
 <script>
@@ -162,22 +211,47 @@
   }
 
   const PRIORITIES = [
-    { value: -2, label: "Lowest: no alert" },
-    { value: -1, label: "Low: no sound or vibration" },
-    { value: 0, label: "Normal" },
-    { value: 1, label: "High: bypasses quiet hours" },
+    { value: -2, label: "Lowest: no alert", short: "Lowest" },
+    { value: -1, label: "Low: no sound", short: "Low" },
+    { value: 0, label: "Normal", short: "Normal" },
+    { value: 1, label: "High", short: "High" },
   ];
-
   // Admin alerts may also be emergencies: Pushover repeats them every minute
-  // for an hour, until acknowledged on the phone.
-  const ADMIN_PRIORITIES = [...PRIORITIES, { value: 2, label: "Emergency: repeats until you acknowledge it" }];
+  // for an hour, until acknowledged.
+  const ADMIN_PRIORITIES = [...PRIORITIES, { value: 2, label: "Emergency: repeats until acknowledged", short: "Emergency" }];
+  const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const TABS = [
+    { id: "account", label: "Pushover account", sub: "Where and how this profile's pushes arrive." },
+    { id: "mine", label: "My alerts", sub: "What this profile hears about." },
+    { id: "admin", label: "Admin alerts", sub: "Server-wide alerts, sent to your Pushover account.", admin: true },
+    { id: "keys", label: "Silo API keys", sub: "Scoped keys the plugin uses to read from Silo.", admin: true },
+  ];
+  const ALERT_GROUPS = [
+    { key: "playback", title: "Playback" },
+    { key: "watchdog", title: "Watchdog" },
+    { key: "server", title: "Server problems" },
+    { key: "scheduled", title: "Scheduled checks" },
+  ];
+  const NOISE = {
+    every: { title: "Every event", text: "Send each one." },
+    cooldown: { title: "Per-user cooldown", text: "One per person per alert type in the window.", window: "Cooldown" },
+    binge: { title: "Collapse binges", text: "One start per show, then quiet until they're idle for the window.", window: "Idle time" },
+  };
+  const KEY_PROBLEMS = {
+    monitor_key_missing: "Admin alerts need the read-only Silo key.",
+    monitor_key_rejected: "Silo rejected the saved read-only key (it may have been revoked), so admin alerts are paused.",
+    monitor_key_scope: "The saved read-only key can't look up accounts, so admin alerts are paused.",
+  };
 
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
   const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const ICON_EDIT = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`;
+  const ICON_SCREEN = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 22h8"/><path d="M12 18v4"/></svg>`;
 
   let state = null, profileId = null, view = null, draft = null;
-  let devices = [], sounds = [], lastField = null, dirty = false, expired = false;
+  let devices = [], sounds = [], dirty = false, expired = false, tab = "account";
+  let openTypes = new Set(), lastField = null, lastGroupMinutes = 5;
 
   async function api(path, method = "GET", body) {
     const opts = { method, credentials: "same-origin", headers: { Accept: "application/json" } };
@@ -203,27 +277,26 @@
 
   function sessionExpired() {
     expired = true;
-    notice("warn", "This page's sign-in has expired.", " For security it only lasts a few minutes. Open Pushover from the Silo sidebar again to keep going. Unsaved changes on this page will be lost.");
-    $$("#app input, #app select, #app textarea, #app button, #bar button, #admin input, #admin select, #admin textarea, #admin button").forEach((e) => (e.disabled = true));
+    notice("warn", "This page's sign-in has expired.", " Open Pushover from the Silo sidebar again. Unsaved changes will be lost.");
+    $$("#shell main input, #shell main select, #shell main textarea, #shell main button, #profileSelect").forEach((e) => (e.disabled = true));
   }
 
-  function barMessage(text, kind) {
-    const m = $("#barMsg");
+  function setSaveMsg(text, kind) {
+    const m = $("#saveMsg");
     m.textContent = text || "";
-    m.className = "msg" + (kind ? " status-" + kind : "");
+    m.className = kind ? "status-" + kind : "";
   }
-
-  function markDirty() {
-    dirty = true;
-    barMessage("Unsaved changes");
+  function refreshSaveMsg() {
+    setSaveMsg(dirty || adminDirty ? "Unsaved changes" : "");
   }
+  function markDirty() { dirty = true; refreshSaveMsg(); }
+  function markAdminDirty() { adminDirty = true; refreshSaveMsg(); }
 
   // Mirrors renderTemplate in templates.go.
   function render(tmpl, vars) {
     return (tmpl || "").replace(/\r\n/g, "\n").split("\n").map((line) => {
       if (!line.trim()) return "";
       const out = line.replace(/\{([a-z_]+)\}/g, (m, k) => (k in vars ? vars[k] : m));
-      // A value can hold several lines (a list of streams); tidy each.
       return out.split("\n").map(tidy).filter(Boolean).join("\n") || null;
     }).filter((l) => l !== null).join("\n").trim();
   }
@@ -236,33 +309,134 @@
     return line.slice(a, b);
   }
 
-  function sampleVars(type) {
-    const p = state.profiles.find((x) => x.id === profileId);
-    return { profile: p ? p.name : "", type: type.key, type_label: type.label, ...type.sample };
+  function browserZone() {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) { return ""; }
   }
+  function zoneLabel(saved) { return browserZone() || saved || "UTC"; }
+
+  function soundOptions(selected, emptyLabel) {
+    const list = [...sounds];
+    if (selected && !list.some((s) => s.value === selected)) list.push({ value: selected, label: selected });
+    return `<option value="">${esc(emptyLabel)}</option>` + list.map((s) =>
+      `<option value="${esc(s.value)}"${s.value === selected ? " selected" : ""}>${esc(s.label)}</option>`).join("");
+  }
+  function priorityOptions(selected, inherit, inheritLabel, list = PRIORITIES) {
+    const first = inherit ? `<option value=""${selected == null ? " selected" : ""}>${esc(inheritLabel)}</option>` : "";
+    return first + list.map((p) => `<option value="${p.value}"${p.value === selected ? " selected" : ""}>${esc(p.label)}</option>`).join("");
+  }
+  function soundName(v) { const s = sounds.find((x) => x.value === v); return s ? s.label.replace(/ \(.*\)$/, "") : v; }
+  function priorityName(v) { const p = ADMIN_PRIORITIES.find((x) => x.value === v); return p ? p.short : String(v); }
+  function metaLine(sound, priority, inheritWord) {
+    return `${sound ? soundName(sound) : inheritWord + " sound"} · ${priority == null ? inheritWord + " priority" : priorityName(priority)}`;
+  }
+
+  // Inserts a placeholder chip into the last focused title or message.
+  function bindChips(box, attr, fallback, getLast) {
+    $$(`[${attr}]`, box).forEach((chip) => chip.addEventListener("click", () => {
+      const last = getLast();
+      const target = last && box.contains(last) ? last : fallback();
+      const text = chip.getAttribute(attr);
+      const s = target.selectionStart ?? target.value.length, e = target.selectionEnd ?? s;
+      target.value = target.value.slice(0, s) + text + target.value.slice(e);
+      target.focus();
+      target.setSelectionRange(s + text.length, s + text.length);
+      target.dispatchEvent(new Event("input"));
+    }));
+  }
+
+  // ---------- Navigation ----------
+
+  function visibleTabs() { return TABS.filter((t) => !t.admin || (state && state.admin)); }
+
+  function renderNav() {
+    $("#navlist").innerHTML = visibleTabs().map((t) => `
+      <button class="nav" type="button" role="tab" id="tab-${t.id}" aria-controls="panel-${t.id}" aria-selected="${t.id === tab}" data-tab="${t.id}">
+        <span class="grow">${esc(t.label)}</span>${t.admin ? '<span class="badge">Admin</span>' : ""}
+      </button>`).join("");
+    $$("#navlist .nav").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
+  }
+
+  function showTab(id) {
+    if (!visibleTabs().some((t) => t.id === id)) id = "account";
+    tab = id;
+    const t = TABS.find((x) => x.id === id);
+    $("#tabTitle").textContent = t.label;
+    $("#tabSub").textContent = t.sub;
+    TABS.forEach((x) => { $("#panel-" + x.id).hidden = x.id !== id; });
+    $$("#navlist .nav").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === id)));
+    if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
+  }
+
+  function renderRailFoot() {
+    const foot = $("#railFoot");
+    const k = state && state.admin && state.admin_keys;
+    const q = adminData && adminData.quota;
+    let html = "";
+    if (k && k.monitor_key_set && adminState !== "key") {
+      html += `<a href="admin/sessions">${ICON_SCREEN}Live streams</a>`;
+    }
+    if (q && q.limit) {
+      const pct = Math.max(0, Math.min(100, (q.remaining / q.limit) * 100));
+      const reset = q.reset ? ` · resets ${new Date(q.reset * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : "";
+      html += `<div class="meter${q.low ? " low" : ""}">
+        <div class="row"><span>Messages left this month</span><b>${esc(Number(q.remaining).toLocaleString())}</b></div>
+        <div class="track"><div class="fill" style="width:${pct.toFixed(1)}%"></div></div>
+        <div style="margin-top:6px">of ${esc(Number(q.limit).toLocaleString())}${esc(reset)}</div></div>`;
+    }
+    foot.innerHTML = html;
+    foot.hidden = !html;
+  }
+
+  // ---------- Start-up ----------
 
   async function init() {
     try {
       state = await api("api/state");
     } catch (e) {
-      if (!expired) { $("#app").innerHTML = ""; notice("error", "Couldn't load Pushover settings.", " " + e.message); }
+      $("#loading").hidden = true;
+      if (!expired) notice("error", "Couldn't load Pushover settings.", " " + e.message);
       return;
     }
+    $("#loading").hidden = true;
     if (state.problem) {
-      $("#app").innerHTML = "";
       notice("warn", "Pushover isn't ready yet.", " " + state.problem.message);
       return;
     }
     if (state.notice) notice(state.notice.level === "warn" ? "warn" : "info", state.notice.title, " " + state.notice.message);
     sounds = state.sounds;
-    renderAdmin();
+    renderNav();
+    renderProfilePick();
+    showTab((location.hash || "").slice(1) || "account");
+    $("#saveBtn").hidden = false;
+    if (state.admin && state.admin_keys) { renderKeys(); loadAdmin(); }
     const active = state.profiles.find((p) => p.active) || state.profiles[0];
     profileId = active.id;
+    $("#profileSelect").value = profileId;
     await loadProfile();
   }
 
+  function renderProfilePick() {
+    const pick = $("#profilePick");
+    if (state.profiles.length < 2) { pick.hidden = true; return; }
+    pick.hidden = false;
+    $("#profileSelect").innerHTML = state.profiles.map((p) =>
+      `<option value="${esc(p.id)}">${esc(p.name)}${p.active ? " (you)" : ""}${p.enabled ? "" : " · off"}</option>`).join("");
+    $("#profileSelect").value = profileId || "";
+  }
+
+  $("#profileSelect").addEventListener("change", async (e) => {
+    const next = e.target.value;
+    if (next === profileId) return;
+    if (dirty && !confirm("Discard unsaved changes to this profile?")) { e.target.value = profileId; return; }
+    profileId = next;
+    await loadProfile();
+  });
+
+  // ---------- Profile (Pushover account, My alerts) ----------
+
   async function loadProfile() {
-    $("#app").innerHTML = `<div class="skeleton"></div>`;
+    $("#panel-account").innerHTML = `<div class="skeleton"></div>`;
+    $("#panel-mine").innerHTML = `<div class="skeleton"></div>`;
     try {
       view = await api("api/profiles/" + encodeURIComponent(profileId));
     } catch (e) {
@@ -273,57 +447,206 @@
     draft.user_key = ""; draft.app_token = ""; draft.clear_app_token = false;
     normalizeDraft();
     devices = view.device ? view.device.split(",") : [];
-    sounds = state.sounds;
     dirty = false;
-    renderAll();
-    barMessage(view.configured ? "" : "Not set up yet");
+    renderProfile();
+    if (!view.configured) setSaveMsg("Not set up yet"); else refreshSaveMsg();
   }
 
-  // Fills in the settings an older save doesn't have: everything off.
   function normalizeDraft() {
     draft.episode_reasons = draft.episode_reasons || [];
     draft.group_minutes = draft.group_minutes || 0;
-    draft.quiet = { enabled: false, start: "22:00", end: "07:00", ...(draft.quiet || {}) };
+    draft.quiet = { enabled: false, start: "22:00", end: "07:00", silence_emergency: false, ...(draft.quiet || {}) };
     draft.episode_reason_options = draft.episode_reason_options || [];
     lastGroupMinutes = draft.group_minutes || 5;
   }
-  let lastGroupMinutes = 5, lastGroupField = null;
 
-  function profileZoneLabel() {
-    return `${browserZone() || draft.time_zone || "UTC"} time, from this browser`;
+  // The viewer's own profile, when they're an admin: it carries the emergency
+  // switch, because admin alerts follow its quiet hours.
+  function isAdminsOwnProfile() {
+    const p = state.profiles.find((x) => x.id === profileId);
+    return !!(state.admin && p && p.active);
   }
 
-  function reasonChecks() {
+  function deviceOptions() {
+    const current = draft.device;
+    const list = [...new Set([...devices, ...(current && !current.includes(",") ? [current] : [])])];
+    return `<option value="">All devices</option>` + list.map((d) =>
+      `<option value="${esc(d)}"${d === current ? " selected" : ""}>${esc(d)}</option>`).join("");
+  }
+
+  function renderProfile() {
+    renderAccount();
+    renderMine();
+  }
+
+  function renderAccount() {
+    const keyPh = view.user_key_hint ? `Saved (${view.user_key_hint})` : "30 letters and numbers";
+    const tokenPh = view.app_token_hint ? `Saved (${view.app_token_hint})` : (state.has_default_token ? "Server's shared token" : "30 letters and numbers");
+    const tokenHelp = state.has_default_token ? "" : `<span class="help">Required on this server. <a href="https://pushover.net/apps/build" target="_blank" rel="noopener">Create an application</a>.</span>`;
+    $("#panel-account").innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:16px">
+      <section class="card">
+        <div class="cardHead">
+          <h2>Connection${view.profile_name ? ` <span class="muted" style="font-weight:400">· ${esc(view.profile_name)}</span>` : ""}</h2>
+          <label class="sw"><input type="checkbox" id="enabled"${draft.enabled ? " checked" : ""}>Send notifications to this profile</label>
+        </div>
+        <div class="cols">
+          <div class="field"><label class="lbl" for="userKey">User key</label>
+            <input type="password" id="userKey" autocomplete="off" spellcheck="false" placeholder="${esc(keyPh)}">
+            <span class="help">On <a href="https://pushover.net" target="_blank" rel="noopener">pushover.net</a> after you sign in.</span></div>
+          <div class="field"><label class="lbl" for="appToken">Application token</label>
+            <input type="password" id="appToken" autocomplete="off" spellcheck="false" placeholder="${esc(tokenPh)}">
+            ${tokenHelp}${view.app_token_hint ? `<button class="link" type="button" id="clearToken" style="align-self:flex-start">${draft.clear_app_token ? "Keep my saved token" : "Use the server's token instead"}</button>` : ""}</div>
+          <div class="field"><label class="lbl" for="device">Device</label><select id="device">${deviceOptions()}</select></div>
+          <div class="field"><span class="lbl">Check</span>
+            <span class="inline"><button class="btn" type="button" id="checkBtn">Check key</button><span class="help" id="checkMsg" role="status" aria-live="polite"></span></span></div>
+        </div>
+      </section>
+      <section class="card">
+        <h2>Delivery</h2>
+        <div class="cols">
+          <div class="field"><label class="lbl" for="sound">Sound</label><select id="sound">${soundOptions(draft.sound, "Pushover app default")}</select></div>
+          <div class="field"><label class="lbl" for="priority">Priority</label><select id="priority">${priorityOptions(draft.priority, false)}</select></div>
+        </div>
+      </section>
+      <section class="card">
+        <div class="cardHead"><h2>Quiet hours</h2>
+          <label class="sw"><input type="checkbox" id="pqOn"${draft.quiet.enabled ? " checked" : ""}>On</label></div>
+        <div class="flexrow" style="gap:16px;align-items:flex-end">
+          <div class="field"><label class="lbl" for="pqStart">From</label><input type="time" id="pqStart" value="${esc(draft.quiet.start)}"></div>
+          <div class="field"><label class="lbl" for="pqEnd">Until</label><input type="time" id="pqEnd" value="${esc(draft.quiet.end)}"></div>
+          <span class="help" style="min-height:40px;display:inline-flex;align-items:center">${esc(zoneLabel(draft.time_zone))}</span>
+        </div>
+        <span class="help">Pushes arrive silently in this window${isAdminsOwnProfile() ? ", admin alerts included" : ""}.</span>
+        ${isAdminsOwnProfile() ? `<div class="flexrow" style="border-top:1px solid var(--border);padding-top:12px">
+          <label class="sw"><input type="checkbox" id="pqSilence"${draft.quiet.silence_emergency ? " checked" : ""}>Turn emergency alerts down too</label>
+          <span class="badge">Admin</span></div>` : ""}
+      </section>
+      ${view.configured ? `<div class="dangerZone"><button class="btn ghost danger" type="button" id="removeBtn">Remove Pushover from this profile</button></div>` : ""}
+      </div>`;
+    bindAccount();
+  }
+
+  function bindAccount() {
+    const on = (sel, ev, fn) => { const e = $(sel); if (e) e.addEventListener(ev, fn); };
+    on("#enabled", "change", (e) => { draft.enabled = e.target.checked; markDirty(); });
+    on("#userKey", "input", (e) => { draft.user_key = e.target.value.trim(); markDirty(); });
+    on("#appToken", "input", (e) => { draft.app_token = e.target.value.trim(); markDirty(); });
+    on("#device", "change", (e) => { draft.device = e.target.value; markDirty(); });
+    on("#sound", "change", (e) => { draft.sound = e.target.value; markDirty(); renderMine(); });
+    on("#priority", "change", (e) => { draft.priority = Number(e.target.value); markDirty(); });
+    on("#pqOn", "change", (e) => { draft.quiet.enabled = e.target.checked; markDirty(); });
+    on("#pqStart", "input", (e) => { draft.quiet.start = e.target.value; markDirty(); });
+    on("#pqEnd", "input", (e) => { draft.quiet.end = e.target.value; markDirty(); });
+    on("#pqSilence", "change", (e) => { draft.quiet.silence_emergency = e.target.checked; markDirty(); });
+    on("#clearToken", "click", (e) => {
+      draft.clear_app_token = !draft.clear_app_token;
+      e.target.textContent = draft.clear_app_token ? "Keep my saved token" : "Use the server's token instead";
+      markDirty();
+    });
+    on("#checkBtn", "click", checkKey);
+    on("#removeBtn", "click", removeProfile);
+  }
+
+  function reasonPills() {
     return draft.episode_reason_options.map((o) =>
-      `<label><input type="checkbox" data-reason="${esc(o.value)}"${draft.episode_reasons.includes(o.value) ? " checked" : ""}> ${esc(o.label)}</label>`).join("");
+      `<label class="pill"><input type="checkbox" data-reason="${esc(o.value)}"${draft.episode_reasons.includes(o.value) ? " checked" : ""}>${esc(o.label)}</label>`).join("");
   }
 
   // The grouped wording only exists for types that can be merged (new episodes).
   function groupType() { return state.types.find((t) => t.default_group_title); }
 
-  function renderGroupWording() {
-    const t = groupType();
-    if (!t) return "";
-    const ts = draft.types[t.key];
-    return `
-      <details id="grpWording">
-        <summary>Customize grouped wording</summary>
-        <div class="editor">
-          <div class="field"><label class="lbl" for="grp_title">Title</label>
-            <input type="text" id="grp_title" value="${esc(ts.group_title)}"></div>
-          <div class="field"><label class="lbl" for="grp_message">Message</label>
-            <textarea id="grp_message" rows="3">${esc(ts.group_message)}</textarea>
-            <div class="chips" aria-label="Insert a placeholder">${t.group_placeholders.map((p) => `<button class="chip" type="button" data-ginsert="{${esc(p)}}">{${esc(p)}}</button>`).join("")}</div>
-          </div>
-          <div class="help">Priority and sound follow the "${esc(t.label)}" settings below. If only one episode arrives in the window it is sent the ordinary way, with that wording.</div>
-          <div class="preview" aria-live="polite"><div class="pl">Preview with sample data</div><div class="pt"></div><div class="pm"></div></div>
-          <div class="actions">
-            <button class="btn" type="button" id="grpTest">Send test</button>
-            <button class="link" type="button" id="grpReset">Reset wording</button>
-            <span class="help" id="grpTestMsg" role="status" aria-live="polite"></span>
-          </div>
+  function renderMine() {
+    if (!draft) return;
+    const on = draft.group_minutes > 0;
+    const gt = groupType();
+    $("#panel-mine").innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:16px">
+      <section class="card">
+        <h2>New episodes</h2>
+        <div class="field"><span class="lbl">Only when the show is in my <span class="muted" style="font-weight:400">(none = every episode)</span></span>
+          <div class="pills">${reasonPills()}</div></div>
+        <div class="flexrow">
+          <label class="sw"><input type="checkbox" id="groupOn"${on ? " checked" : ""}>Group a season drop into one push</label>
+          <label class="inline" id="groupField"${on ? "" : " hidden"}>wait<input type="number" class="num" id="groupMinutes" min="1" max="120" step="1" inputmode="numeric" value="${esc(on ? draft.group_minutes : "")}" aria-label="Minutes to wait for more episodes">min</label>
         </div>
-      </details>`;
+        ${gt ? `<details id="grpWording"${openTypes.has("__group") ? " open" : ""}>
+          <summary>Grouped wording</summary>
+          <div class="editor">
+            <div class="col">
+              <div class="field"><label class="lbl" for="grp_title">Title</label><input type="text" id="grp_title" value="${esc(draft.types[gt.key].group_title)}"></div>
+              <div class="field"><label class="lbl" for="grp_message">Message</label><textarea id="grp_message" rows="3">${esc(draft.types[gt.key].group_message)}</textarea></div>
+              <div class="chips" aria-label="Insert a placeholder">${gt.group_placeholders.map((p) => `<button class="chip" type="button" data-ginsert="{${esc(p)}}">{${esc(p)}}</button>`).join("")}</div>
+            </div>
+            <div class="col">
+              <span class="lbl">Preview</span>
+              <div class="preview" aria-live="polite"><div class="pt"></div><div class="pm"></div></div>
+              <span class="help">Sound and priority follow "${esc(gt.label)}".</span>
+              <div class="actions"><button class="btn" type="button" id="grpTest">Send test</button><button class="btn ghost" type="button" id="grpReset">Reset wording</button><span class="help" id="grpTestMsg" role="status" aria-live="polite"></span></div>
+            </div>
+          </div>
+        </details>` : ""}
+      </section>
+      <section class="card">
+        <h2>Notifications</h2>
+        <div class="rows">${state.types.map(renderType).join("")}</div>
+      </section>
+      <section class="card">
+        <h2>Message extras</h2>
+        <div class="flexrow">
+          <label class="sw"><input type="checkbox" id="attachPoster"${draft.attach_poster ? " checked" : ""}>Attach the poster</label>
+          <label class="sw"><input type="checkbox" id="includeLink"${draft.include_link ? " checked" : ""}>"Open in Silo" link</label>
+          <label class="sw"><input type="checkbox" id="html"${draft.html ? " checked" : ""}>HTML formatting</label>
+        </div>
+      </section>
+      </div>`;
+    bindMine();
+    state.types.forEach(updatePreview);
+    updateGroupPreview();
+  }
+
+  function renderType(t) {
+    const ts = draft.types[t.key];
+    const id = t.key.replace(/\W/g, "_");
+    const open = openTypes.has(t.key);
+    return `
+      <div class="item" data-type="${esc(t.key)}">
+        <div class="itemHead">
+          <label class="sw"><input type="checkbox" data-k="enabled"${ts.enabled ? " checked" : ""}>${esc(t.label)}</label>
+          <span class="meta">${esc(metaLine(ts.sound, ts.priority ?? null, "Default"))}</span>
+          <button class="btn" type="button" data-open aria-expanded="${open}">${open ? "Close" : "Customize"}</button>
+        </div>
+        ${open ? `<div class="editor">
+          <div class="col">
+            <div class="field"><label class="lbl" for="${id}_title">Title</label><input type="text" id="${id}_title" data-k="title" value="${esc(ts.title)}"></div>
+            <div class="field"><label class="lbl" for="${id}_message">Message</label><textarea id="${id}_message" data-k="message" rows="3">${esc(ts.message)}</textarea></div>
+            <div class="chips" aria-label="Insert a placeholder">${t.placeholders.map((p) => `<button class="chip" type="button" data-insert="{${esc(p)}}">{${esc(p)}}</button>`).join("")}</div>
+            <div class="cols" style="gap:12px">
+              <div class="field"><label class="lbl" for="${id}_sound">Sound</label><select id="${id}_sound" data-k="sound">${soundOptions(ts.sound || "", "Same as account")}</select></div>
+              <div class="field"><label class="lbl" for="${id}_priority">Priority</label><select id="${id}_priority" data-k="priority">${priorityOptions(ts.priority ?? null, true, "Same as account")}</select></div>
+            </div>
+          </div>
+          <div class="col">
+            <span class="lbl">Preview</span>
+            <div class="preview" aria-live="polite"><div class="pt"></div><div class="pm"></div></div>
+            <div class="actions"><button class="btn" type="button" data-test>Send test</button><button class="btn ghost" type="button" data-reset>Reset wording</button><span class="help" data-test-msg role="status" aria-live="polite"></span></div>
+          </div>
+        </div>` : ""}
+      </div>`;
+  }
+
+  function sampleVars(type) {
+    const p = state.profiles.find((x) => x.id === profileId);
+    return { profile: p ? p.name : "", type: type.key, type_label: type.label, ...type.sample };
+  }
+
+  function updatePreview(t) {
+    const box = $(`#panel-mine .item[data-type="${CSS.escape(t.key)}"]`);
+    if (!box || !$(".pt", box)) return;
+    const ts = draft.types[t.key];
+    const vars = sampleVars(t);
+    $(".pt", box).textContent = render(ts.title, vars) || "(no title)";
+    $(".pm", box).textContent = render(ts.message, vars) || "(no message)";
   }
 
   function updateGroupPreview() {
@@ -337,186 +660,9 @@
     $(".pm", box).textContent = render(ts.group_message, vars) || "(no message)";
   }
 
-  function renderEpisodeCard() {
-    const on = draft.group_minutes > 0;
-    return `
-      <section class="card">
-        <h2>New episodes</h2>
-        <p class="sub">Choose which new episodes reach you, and whether several episodes of one show arrive as a single notification.</p>
-        <fieldset class="field">
-          <legend class="lbl">Only tell me about episodes that are in my</legend>
-          <div class="pick inline">${reasonChecks()}</div>
-          <div class="help">Leave all unticked to hear about every new episode. With any ticked, an episode is sent only when Silo gives at least one of those reasons for it.</div>
-        </fieldset>
-        <div class="checks" style="margin:12px 0 4px">
-          <label class="switch"><input type="checkbox" id="groupOn"${on ? " checked" : ""}>
-            <span><span class="t">Group a season drop into one notification</span><br><span class="d">When a show's first new episode arrives, wait a few minutes for the rest and send one notification such as "Severance: 3 new episodes (S02E01 to S02E03)". Off: every episode is sent as it arrives.</span></span></label>
-        </div>
-        <div class="field" id="groupField"${on ? "" : " hidden"} style="margin-left:50px">
-          <label class="lbl" for="groupMinutes">Wait for more episodes (minutes)</label>
-          <input type="number" class="narrow" id="groupMinutes" min="1" max="120" step="1" inputmode="numeric" value="${esc(on ? draft.group_minutes : "")}">
-          <div class="help">Counted from the first episode of that show. A notification is sent when the time is up, so it can arrive up to half a minute later.</div>
-        </div>
-        ${renderGroupWording()}
-      </section>
-      <section class="card">
-        <h2>Quiet hours</h2>
-        <p class="sub">Between the times below this profile's notifications go out at low priority: no sound or vibration. They still arrive and wait in the Pushover app.</p>
-        <div class="checks" style="margin:12px 0 4px">
-          <label class="switch"><input type="checkbox" id="pqOn"${draft.quiet.enabled ? " checked" : ""}>
-            <span><span class="t">Turn this profile's notifications down at night</span><br><span class="d">Applies to every notification below, including ones set to high priority. The time zone is read from this browser and saved with your settings.</span></span></label>
-        </div>
-        <div class="times">
-          <label for="pqStart">From</label><input type="time" id="pqStart" value="${esc(draft.quiet.start)}">
-          <label for="pqEnd">until</label><input type="time" id="pqEnd" value="${esc(draft.quiet.end)}">
-          <span class="muted">${esc(profileZoneLabel())}</span>
-        </div>
-      </section>`;
-  }
-
-  function renderTabs() {
-    if (state.profiles.length < 2) return "";
-    return `<div class="tabs" role="tablist" aria-label="Profiles">${state.profiles.map((p) =>
-      `<button class="tab" role="tab" type="button" data-profile="${esc(p.id)}" aria-selected="${p.id === profileId}">${esc(p.name)}${p.enabled ? '<span class="dot" title="Pushover is on"></span>' : ""}</button>`).join("")}</div>`;
-  }
-
-  function soundOptions(selected, emptyLabel) {
-    const list = [...sounds];
-    if (selected && !list.some((s) => s.value === selected)) list.push({ value: selected, label: selected });
-    return `<option value="">${esc(emptyLabel)}</option>` + list.map((s) =>
-      `<option value="${esc(s.value)}"${s.value === selected ? " selected" : ""}>${esc(s.label)}</option>`).join("");
-  }
-
-  function priorityOptions(selected, inherit, inheritLabel = "Same as default", list = PRIORITIES) {
-    const first = inherit ? `<option value=""${selected == null ? " selected" : ""}>${esc(inheritLabel)}</option>` : "";
-    return first + list.map((p) => `<option value="${p.value}"${p.value === selected ? " selected" : ""}>${esc(p.label)}</option>`).join("");
-  }
-
-  function deviceOptions() {
-    const current = draft.device;
-    const list = [...new Set([...devices, ...(current && !current.includes(",") ? [current] : [])])];
-    return `<option value="">All my devices</option>` + list.map((d) =>
-      `<option value="${esc(d)}"${d === current ? " selected" : ""}>${esc(d)}</option>`).join("");
-  }
-
-  function renderAll() {
-    const tokenHelp = state.has_default_token
-      ? "Optional. Leave blank to use this server's shared Pushover application."
-      : `Required. This server has no shared application, so <a href="https://pushover.net/apps/build" target="_blank" rel="noopener">create one on Pushover</a> and paste its API token.`;
-    const keyPlaceholder = view.user_key_hint ? `Saved (${view.user_key_hint}). Enter a new key to replace it.` : "30 letters and numbers";
-    const tokenPlaceholder = view.app_token_hint ? `Saved (${view.app_token_hint}). Enter a new token to replace it.` : (state.has_default_token ? "Using the server's application" : "30 letters and numbers");
-
-    $("#app").innerHTML = `
-      ${renderTabs()}
-      <section class="card">
-        <h2>Pushover account</h2>
-        <p class="sub">Settings for <strong>${esc(view.profile_name)}</strong>. Find your user key at the top of <a href="https://pushover.net" target="_blank" rel="noopener">pushover.net</a> after you sign in.</p>
-        <div class="field">
-          <label class="switch"><input type="checkbox" id="enabled" role="switch"${draft.enabled ? " checked" : ""}>
-            <span><span class="t">Send this profile's notifications to Pushover</span></span></label>
-        </div>
-        <div class="field">
-          <label class="lbl" for="userKey">User key</label>
-          <div class="row">
-            <input type="password" id="userKey" autocomplete="off" spellcheck="false" placeholder="${esc(keyPlaceholder)}">
-            <button class="btn" type="button" id="checkBtn">Check key</button>
-          </div>
-          <div class="help" id="checkMsg" role="status" aria-live="polite">Checking lists your devices and custom sounds.</div>
-        </div>
-        <div class="field">
-          <label class="lbl" for="appToken">Application token</label>
-          <input type="password" id="appToken" autocomplete="off" spellcheck="false" placeholder="${esc(tokenPlaceholder)}">
-          <div class="help">${tokenHelp}${view.app_token_hint ? ` <button class="link" type="button" id="clearToken">${draft.clear_app_token ? "Keep my saved token" : "Remove my saved token"}</button>` : ""}</div>
-        </div>
-        <div class="grid">
-          <div class="field"><label class="lbl" for="device">Device</label><select id="device">${deviceOptions()}</select></div>
-          <div class="field"><label class="lbl" for="sound">Sound</label><select id="sound">${soundOptions(draft.sound, "Pushover app default")}</select></div>
-          <div class="field"><label class="lbl" for="priority">Priority</label><select id="priority">${priorityOptions(draft.priority, false)}</select></div>
-        </div>
-        <div class="checks">
-          <label class="switch"><input type="checkbox" id="includeLink"${draft.include_link ? " checked" : ""}>
-            <span><span class="t">Add an "Open in Silo" link</span><br><span class="d">Opens the episode or title in Silo.</span></span></label>
-          <label class="switch"><input type="checkbox" id="attachPoster"${draft.attach_poster ? " checked" : ""}>
-            <span><span class="t">Attach the poster</span><br><span class="d">Shows artwork in the notification when Silo has it.</span></span></label>
-          <label class="switch"><input type="checkbox" id="html"${draft.html ? " checked" : ""}>
-            <span><span class="t">Allow HTML in messages</span><br><span class="d">Lets your templates use &lt;b&gt;, &lt;i&gt;, &lt;u&gt;, &lt;font color&gt; and &lt;a&gt;.</span></span></label>
-        </div>
-      </section>
-      ${renderEpisodeCard()}
-      <section class="card">
-        <h2>Notifications</h2>
-        <p class="sub">Choose what to receive and how each one reads. Which episodes count as new follows your New Episode Notifications settings in Silo.</p>
-        ${state.types.map(renderType).join("")}
-      </section>`;
-
-    $("#bar").hidden = false;
-    $("#removeBtn").hidden = !view.configured;
-    bind();
-    state.types.forEach(updatePreview);
-    updateGroupPreview();
-  }
-
-  function renderType(t) {
-    const ts = draft.types[t.key];
-    const id = t.key.replace(/\W/g, "_");
-    return `
-      <div class="type" data-type="${esc(t.key)}">
-        <label class="switch"><input type="checkbox" data-k="enabled"${ts.enabled ? " checked" : ""}>
-          <span><span class="t">${esc(t.label)}</span><br><span class="d">${esc(t.description)}</span></span></label>
-        <details>
-          <summary>Customize wording</summary>
-          <div class="editor">
-            <div class="field"><label class="lbl" for="${id}_title">Title</label>
-              <input type="text" id="${id}_title" data-k="title" value="${esc(ts.title)}"></div>
-            <div class="field"><label class="lbl" for="${id}_message">Message</label>
-              <textarea id="${id}_message" data-k="message" rows="2">${esc(ts.message)}</textarea>
-              <div class="chips" aria-label="Insert a placeholder">${t.placeholders.map((p) => `<button class="chip" type="button" data-insert="{${esc(p)}}">{${esc(p)}}</button>`).join("")}</div>
-            </div>
-            <div class="grid">
-              <div class="field"><label class="lbl" for="${id}_priority">Priority</label>
-                <select id="${id}_priority" data-k="priority">${priorityOptions(ts.priority ?? null, true)}</select></div>
-              <div class="field"><label class="lbl" for="${id}_sound">Sound</label>
-                <select id="${id}_sound" data-k="sound">${soundOptions(ts.sound || "", "Same as default")}</select></div>
-            </div>
-            <div class="preview" aria-live="polite"><div class="pl">Preview with sample data</div><div class="pt"></div><div class="pm"></div></div>
-            <div class="actions">
-              <button class="btn" type="button" data-test>Send test</button>
-              <button class="link" type="button" data-reset>Reset wording</button>
-              <span class="help" data-test-msg role="status" aria-live="polite"></span>
-            </div>
-          </div>
-        </details>
-      </div>`;
-  }
-
-  function updatePreview(t) {
-    const box = $(`#app .type[data-type="${CSS.escape(t.key)}"]`);
-    if (!box) return;
-    const ts = draft.types[t.key];
-    const vars = sampleVars(t);
-    $(".pt", box).textContent = render(ts.title, vars) || "(no title)";
-    $(".pm", box).textContent = render(ts.message, vars) || "(no message)";
-  }
-
-  function bind() {
-    $$(".tab").forEach((b) => b.addEventListener("click", async () => {
-      if (b.dataset.profile === profileId) return;
-      if (dirty && !confirm("Discard unsaved changes to this profile?")) return;
-      profileId = b.dataset.profile;
-      await loadProfile();
-    }));
-
+  function bindMine() {
     const on = (sel, ev, fn) => { const e = $(sel); if (e) e.addEventListener(ev, fn); };
-    on("#enabled", "change", (e) => { draft.enabled = e.target.checked; markDirty(); });
-    on("#userKey", "input", (e) => { draft.user_key = e.target.value.trim(); markDirty(); });
-    on("#appToken", "input", (e) => { draft.app_token = e.target.value.trim(); markDirty(); });
-    on("#device", "change", (e) => { draft.device = e.target.value; markDirty(); });
-    on("#sound", "change", (e) => { draft.sound = e.target.value; markDirty(); });
-    on("#priority", "change", (e) => { draft.priority = Number(e.target.value); markDirty(); });
-    on("#includeLink", "change", (e) => { draft.include_link = e.target.checked; markDirty(); });
-    on("#attachPoster", "change", (e) => { draft.attach_poster = e.target.checked; markDirty(); });
-    on("#html", "change", (e) => { draft.html = e.target.checked; markDirty(); });
-    $$("#app [data-reason]").forEach((c) => c.addEventListener("change", () => {
+    $$("#panel-mine [data-reason]").forEach((c) => c.addEventListener("change", () => {
       draft.episode_reasons = draft.episode_reasons.filter((v) => v !== c.dataset.reason);
       if (c.checked) draft.episode_reasons.push(c.dataset.reason);
       markDirty();
@@ -532,20 +678,38 @@
       if (draft.group_minutes > 0) lastGroupMinutes = draft.group_minutes;
       markDirty();
     });
-    on("#pqOn", "change", (e) => { draft.quiet.enabled = e.target.checked; markDirty(); });
-    on("#pqStart", "input", (e) => { draft.quiet.start = e.target.value; markDirty(); });
-    on("#pqEnd", "input", (e) => { draft.quiet.end = e.target.value; markDirty(); });
-    bindGroupWording();
-    on("#clearToken", "click", (e) => {
-      draft.clear_app_token = !draft.clear_app_token;
-      e.target.textContent = draft.clear_app_token ? "Keep my saved token" : "Remove my saved token";
-      markDirty();
-    });
-    on("#checkBtn", "click", checkKey);
+    on("#attachPoster", "change", (e) => { draft.attach_poster = e.target.checked; markDirty(); });
+    on("#includeLink", "change", (e) => { draft.include_link = e.target.checked; markDirty(); });
+    on("#html", "change", (e) => { draft.html = e.target.checked; markDirty(); });
 
-    $$("#app .type").forEach((box) => {
+    const grp = $("#grpWording");
+    if (grp) {
+      const t = groupType();
+      const ts = draft.types[t.key];
+      let lastGroupField = null;
+      grp.addEventListener("toggle", () => { if (grp.open) openTypes.add("__group"); else openTypes.delete("__group"); });
+      const title = $("#grp_title"), message = $("#grp_message");
+      [[title, "group_title"], [message, "group_message"]].forEach(([input, k]) => {
+        input.addEventListener("input", () => { ts[k] = input.value; markDirty(); updateGroupPreview(); });
+        input.addEventListener("focus", () => (lastGroupField = input));
+      });
+      bindChips(grp, "data-ginsert", () => message, () => lastGroupField);
+      $("#grpReset").addEventListener("click", () => {
+        ts.group_title = t.default_group_title; ts.group_message = t.default_group_message;
+        title.value = ts.group_title; message.value = ts.group_message;
+        markDirty(); updateGroupPreview();
+      });
+      $("#grpTest").addEventListener("click", (e) =>
+        runTest(e.target, $("#grpTestMsg"), `api/profiles/${encodeURIComponent(profileId)}/test`, { settings: payload(), type: t.key, group: true }));
+    }
+
+    $$("#panel-mine .item").forEach((box) => {
       const t = state.types.find((x) => x.key === box.dataset.type);
       const ts = draft.types[t.key];
+      $("[data-open]", box).addEventListener("click", () => {
+        if (openTypes.has(t.key)) openTypes.delete(t.key); else openTypes.add(t.key);
+        renderMine();
+      });
       $$("[data-k]", box).forEach((input) => {
         const k = input.dataset.k;
         const ev = input.tagName === "SELECT" || input.type === "checkbox" ? "change" : "input";
@@ -554,65 +718,21 @@
           else if (k === "priority") ts.priority = input.value === "" ? null : Number(input.value);
           else ts[k] = input.value;
           markDirty();
+          if (k === "sound" || k === "priority") $(".meta", box).textContent = metaLine(ts.sound, ts.priority ?? null, "Default");
           updatePreview(t);
         });
         if (k === "title" || k === "message") input.addEventListener("focus", () => (lastField = input));
       });
-      $$("[data-insert]", box).forEach((chip) => chip.addEventListener("click", () => {
-        const target = lastField && box.contains(lastField) ? lastField : $("[data-k=message]", box);
-        const s = target.selectionStart ?? target.value.length, e = target.selectionEnd ?? s;
-        target.value = target.value.slice(0, s) + chip.dataset.insert + target.value.slice(e);
-        target.focus();
-        target.setSelectionRange(s + chip.dataset.insert.length, s + chip.dataset.insert.length);
-        target.dispatchEvent(new Event("input"));
-      }));
+      if (!$(".editor", box)) return;
+      bindChips(box, "data-insert", () => $("[data-k=message]", box), () => lastField);
       $("[data-reset]", box).addEventListener("click", () => {
         ts.title = t.default_title; ts.message = t.default_message;
         $("[data-k=title]", box).value = ts.title;
         $("[data-k=message]", box).value = ts.message;
-        markDirty();
-        updatePreview(t);
+        markDirty(); updatePreview(t);
       });
-      $("[data-test]", box).addEventListener("click", (e) => sendTest(t, e.target, $("[data-test-msg]", box)));
-    });
-  }
-
-  function bindGroupWording() {
-    const t = groupType();
-    const box = $("#grpWording");
-    if (!t || !box) return;
-    const ts = draft.types[t.key];
-    const title = $("#grp_title"), message = $("#grp_message");
-    [[title, "group_title"], [message, "group_message"]].forEach(([input, k]) => {
-      input.addEventListener("input", () => { ts[k] = input.value; markDirty(); updateGroupPreview(); });
-      input.addEventListener("focus", () => (lastGroupField = input));
-    });
-    $$("[data-ginsert]", box).forEach((chip) => chip.addEventListener("click", () => {
-      const target = lastGroupField && box.contains(lastGroupField) ? lastGroupField : message;
-      const s = target.selectionStart ?? target.value.length, e = target.selectionEnd ?? s;
-      target.value = target.value.slice(0, s) + chip.dataset.ginsert + target.value.slice(e);
-      target.focus();
-      target.setSelectionRange(s + chip.dataset.ginsert.length, s + chip.dataset.ginsert.length);
-      target.dispatchEvent(new Event("input"));
-    }));
-    $("#grpReset").addEventListener("click", () => {
-      ts.group_title = t.default_group_title; ts.group_message = t.default_group_message;
-      title.value = ts.group_title; message.value = ts.group_message;
-      markDirty();
-      updateGroupPreview();
-    });
-    $("#grpTest").addEventListener("click", async (e) => {
-      const btn = e.target, out = $("#grpTestMsg");
-      btn.disabled = true;
-      out.className = "help"; out.textContent = "Sending…";
-      try {
-        await api(`api/profiles/${encodeURIComponent(profileId)}/test`, "POST", { settings: payload(), type: t.key, group: true });
-        out.className = "help status-ok"; out.textContent = "Sent. Check your device.";
-      } catch (err) {
-        if (!expired) { out.className = "help status-err"; out.textContent = err.message; }
-      } finally {
-        btn.disabled = expired;
-      }
+      $("[data-test]", box).addEventListener("click", (e) =>
+        runTest(e.target, $("[data-test-msg]", box), `api/profiles/${encodeURIComponent(profileId)}/test`, { settings: payload(), type: t.key }));
     });
   }
 
@@ -627,22 +747,34 @@
     };
   }
 
+  async function runTest(btn, out, path, body, onKeyProblem) {
+    btn.disabled = true;
+    out.className = "help"; out.textContent = "Sending…";
+    try {
+      await api(path, "POST", body);
+      out.className = "help status-ok"; out.textContent = "Sent.";
+    } catch (e) {
+      if (expired) return;
+      if (onKeyProblem && isKeyProblem(e)) { onKeyProblem(e); return; }
+      out.className = "help status-err"; out.textContent = e.message;
+    } finally {
+      btn.disabled = expired;
+    }
+  }
+
   async function checkKey() {
     const msg = $("#checkMsg"), btn = $("#checkBtn");
     btn.disabled = true;
-    msg.className = "help"; msg.textContent = "Checking with Pushover…";
+    msg.className = "help"; msg.textContent = "Checking…";
     try {
       const res = await api(`api/profiles/${encodeURIComponent(profileId)}/validate`, "POST",
         { user_key: draft.user_key, app_token: draft.clear_app_token ? "" : draft.app_token, clear_app_token: draft.clear_app_token });
       devices = res.devices; sounds = res.sounds;
       $("#device").innerHTML = deviceOptions();
       $("#sound").innerHTML = soundOptions(draft.sound, "Pushover app default");
-      state.types.forEach((t) => {
-        const sel = $(`#app .type[data-type="${CSS.escape(t.key)}"] [data-k=sound]`);
-        if (sel) sel.innerHTML = soundOptions(draft.types[t.key].sound || "", "Same as default");
-      });
+      renderMine();
       msg.className = "help status-ok";
-      msg.textContent = devices.length ? `Key works. Devices: ${devices.join(", ")}.` : "Key works. No devices are registered yet; install the Pushover app to receive messages.";
+      msg.textContent = devices.length ? `Works · ${devices.length} device${devices.length === 1 ? "" : "s"}` : "Works · no devices yet";
     } catch (e) {
       if (!expired) { msg.className = "help status-err"; msg.textContent = e.message; }
     } finally {
@@ -650,112 +782,85 @@
     }
   }
 
-  async function sendTest(t, btn, out) {
-    btn.disabled = true;
-    out.className = "help"; out.textContent = "Sending…";
-    try {
-      await api(`api/profiles/${encodeURIComponent(profileId)}/test`, "POST", { settings: payload(), type: t.key });
-      out.className = "help status-ok"; out.textContent = "Sent. Check your device.";
-    } catch (e) {
-      if (!expired) { out.className = "help status-err"; out.textContent = e.message; }
-    } finally {
-      btn.disabled = expired;
-    }
+  async function saveProfile() {
+    const res = await api("api/profiles/" + encodeURIComponent(profileId), "PUT", payload());
+    const summary = state.profiles.find((p) => p.id === profileId);
+    if (summary) { summary.configured = true; summary.enabled = res.profile.enabled; }
+    view = res.profile;
+    draft = JSON.parse(JSON.stringify(view));
+    draft.user_key = ""; draft.app_token = ""; draft.clear_app_token = false;
+    normalizeDraft();
+    dirty = false;
+    renderProfile();
+    renderProfilePick();
+    return res.warning || "";
   }
 
-  $("#saveBtn").addEventListener("click", async () => {
-    const btn = $("#saveBtn");
-    btn.disabled = true;
-    barMessage("Saving…");
-    try {
-      const res = await api("api/profiles/" + encodeURIComponent(profileId), "PUT", payload());
-      const summary = state.profiles.find((p) => p.id === profileId);
-      if (summary) { summary.configured = true; summary.enabled = res.profile.enabled; }
-      view = res.profile;
-      draft = JSON.parse(JSON.stringify(view));
-      draft.user_key = ""; draft.app_token = ""; draft.clear_app_token = false;
-      normalizeDraft();
-      dirty = false;
-      renderAll();
-      if (res.warning) barMessage(res.warning, "err"); else barMessage("Saved", "ok");
-      refreshAdminReady();
-    } catch (e) {
-      if (!expired) barMessage(e.message, "err");
-    } finally {
-      btn.disabled = expired;
-    }
-  });
-
-  $("#removeBtn").addEventListener("click", async () => {
+  async function removeProfile() {
     if (!confirm(`Stop sending ${view.profile_name}'s notifications to Pushover and forget its keys?`)) return;
     try {
       await api("api/profiles/" + encodeURIComponent(profileId), "DELETE");
       const summary = state.profiles.find((p) => p.id === profileId);
       if (summary) { summary.configured = false; summary.enabled = false; }
       await loadProfile();
-      barMessage("Removed", "ok");
+      setSaveMsg("Removed", "ok");
       refreshAdminReady();
     } catch (e) {
-      if (!expired) barMessage(e.message, "err");
+      if (!expired) setSaveMsg(e.message, "err");
+    }
+  }
+
+  // ---------- Save ----------
+
+  $("#saveBtn").addEventListener("click", async () => {
+    const btn = $("#saveBtn");
+    if (!dirty && !adminDirty) { setSaveMsg("Nothing to save"); return; }
+    if (adminDirty) {
+      const problem = adminProblemCheck();
+      if (problem) { showTab("admin"); setSaveMsg(problem[0], "err"); if (problem[1]) problem[1].focus(); return; }
+    }
+    btn.disabled = true;
+    setSaveMsg("Saving…");
+    const warnings = [];
+    try {
+      if (dirty) {
+        const w = await saveProfile();
+        if (w) warnings.push(w);
+        refreshAdminReady();
+      }
+      if (adminDirty) {
+        const w = await saveAdmin();
+        if (w) warnings.push(w);
+      }
+      if (warnings.length) setSaveMsg(warnings.join(" "), "err"); else setSaveMsg("Saved", "ok");
+    } catch (e) {
+      if (!expired) setSaveMsg(e.message, "err");
+    } finally {
+      btn.disabled = expired;
     }
   });
 
-  // Admin section. Only acting admins get state.admin. It has two states:
-  // without a working read-only Silo key only the key setup shows; with one,
-  // the alert settings show and key setup is tucked below.
+  // ---------- Admin alerts ----------
+
   let adminData = null, adminDraft = null, adminUsers = [], adminUsersError = "";
   let adminState = "loading", adminProblem = "", adminDirty = false, adminField = null;
-
-  const NOISE_HELP = {
-    binge: {
-      title: "Collapse binges (default)",
-      text: "You get one alert when someone starts a show or movie. After that, everything else about that person and that title is held back until they've been idle for the time below: later episodes, pauses, resumes and stops. That includes the stop alert for a stream you were told about, so you'll rarely see one. If they start something different, or come back after the idle time, you hear about it again.",
-      window: "Idle time before you hear about them again (minutes)",
-      windowHelp: "How long someone must have stopped watching a title before their next start is sent.",
-    },
-    cooldown: {
-      title: "Per-user cooldown",
-      text: "Each kind of alert (started, paused or resumed, stopped) is sent at most once per person in each window, whatever they're watching. A start and a stop can both come through, but a second start from the same person inside the window is skipped.",
-      window: "Cooldown (minutes)",
-      windowHelp: "The shortest time between two alerts of the same kind about the same person.",
-    },
-    every: {
-      title: "Every event",
-      text: "Every start, pause, resume and stop is sent. This can get noisy on a busy server.",
-    },
-  };
-
-  const KEY_PROBLEMS = {
-    monitor_key_missing: "Admin alerts need the read-only Silo key. The plugin uses it to check that each person who gets alerts is still an admin. Set it up below to turn them on.",
-    monitor_key_rejected: "Silo rejected the saved read-only key, so admin alerts are paused. It may have been revoked. Set up a new one below.",
-    monitor_key_scope: "The saved read-only key isn't allowed to look up accounts, so admin alerts are paused. Set up a new one below.",
-  };
+  let adminSub = "alerts", openAlert = null;
   const isKeyProblem = (e) => e && typeof e.code === "string" && e.code.startsWith("monitor_key_");
 
-  function renderAdmin() {
-    const box = $("#admin");
-    if (!state || !state.admin || !state.admin_keys) { box.innerHTML = ""; return; }
-    box.innerHTML = `<div id="adminAlerts"></div><div id="adminKeys"></div>`;
-    renderKeys();
-    loadAdmin();
-  }
-
-  // Switches the admin section to key setup only.
   function showKeyOnly(code) {
     adminState = "key";
     adminProblem = code || "monitor_key_missing";
     adminData = null; adminDraft = null; adminDirty = false;
-    $("#adminAlerts").innerHTML = "";
+    refreshSaveMsg();
+    renderAdmin();
     renderKeys();
+    renderRailFoot();
   }
 
   async function loadAdmin() {
-    const box = $("#adminAlerts");
-    if (!box) return;
     if (!state.admin_keys.monitor_key_set) { showKeyOnly("monitor_key_missing"); return; }
     adminState = "loading";
-    box.innerHTML = `<div class="skeleton"></div>`;
-    renderKeys();
+    renderAdmin();
     const usersReq = api("api/admin/users");
     usersReq.catch(() => {});
     try {
@@ -763,12 +868,8 @@
     } catch (e) {
       if (expired) return;
       if (isKeyProblem(e)) { showKeyOnly(e.code); return; }
-      adminState = "error";
-      box.innerHTML = `<section class="card"><h2>Admin alerts<span class="badge">Admin</span></h2>
-        <div class="notice error"><strong>Couldn't load your admin alert settings.</strong> ${esc(e.message)}
-          <div class="actions"><button class="btn" type="button" id="adminRetry">Try again</button></div></div></section>`;
-      $("#adminRetry").addEventListener("click", loadAdmin);
-      renderKeys();
+      adminState = "error"; adminProblem = e.message;
+      renderAdmin();
       return;
     }
     adminUsers = []; adminUsersError = "";
@@ -781,70 +882,21 @@
     }
     adminState = "ready"; adminProblem = ""; adminDirty = false;
     adminDraft = draftFrom(adminData.settings);
-    renderAdminAlerts();
+    renderAdmin();
     renderKeys();
-    adminMessage(adminData.configured ? "" : "Not set up yet. Every alert is off until you switch it on.");
+    renderRailFoot();
   }
 
   function draftFrom(settings) {
     const d = JSON.parse(JSON.stringify(settings));
     d.limits = { user_streams: 0, server_streams: 0, bandwidth_mbps: 0, bandwidth_remote_only: false, disk_pct: 0, memory_pct: 0, ...(d.limits || {}) };
     d.filters.libraries = d.filters.libraries || [];
-    d.quiet = { enabled: false, start: "22:00", end: "07:00", silence_emergency: false, ...(d.quiet || {}) };
     d.digest = { day: 0, hour: 18, ...(d.digest || {}) };
     d.attach_poster = !!d.attach_poster;
     d.silo_link = d.silo_link !== false;
     return d;
   }
 
-  function adminMessage(text, kind) {
-    const m = $("#adminMsg");
-    if (!m) return;
-    m.textContent = text || "";
-    m.className = "help" + (kind ? " status-" + kind : "");
-  }
-
-  function markAdminDirty() {
-    adminDirty = true;
-    adminMessage("Unsaved changes");
-  }
-
-  function activeProfileName() {
-    const p = state.profiles.find((x) => x.active) || state.profiles[0];
-    return p ? p.name : "your profile";
-  }
-
-  // The browser's time zone: quiet hours and the digest hour are in it, and it
-  // is saved with the settings.
-  function browserZone() {
-    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) { return ""; }
-  }
-  function zoneLabel() {
-    const z = browserZone() || (adminDraft && adminDraft.time_zone) || "UTC";
-    return `${z} time, from this browser`;
-  }
-
-  // Pushover's monthly quota for the admin's application, as last seen on a
-  // send. Under 10 percent is a warning.
-  function quotaNotice() {
-    const q = adminData && adminData.quota;
-    if (!q) return "";
-    const left = `${Number(q.remaining).toLocaleString()} of ${Number(q.limit).toLocaleString()}`;
-    const refill = q.reset ? ` The count starts over on ${new Date(q.reset * 1000).toLocaleDateString()}.` : "";
-    if (q.low) {
-      return `<div class="notice warn"><strong>Your Pushover application is nearly out of messages.</strong> ${esc(left)} messages are left this month.${esc(refill)} Once they run out Pushover refuses every message from this application, for everyone who uses it, and the allowance is shared by every application on the same Pushover account. Mute noisy alerts, or give the plugin its own application token.</div>`;
-    }
-    return `<div class="help">Pushover messages left this month on your application: ${esc(left)}.${esc(refill)}</div>`;
-  }
-
-  function adminNotices() { return readyNotice() + quotaNotice(); }
-
-  function readyNotice() {
-    if (!adminData || adminData.pushover_ready) return "";
-    return `<div class="notice warn"><strong>Set up Pushover for ${esc(activeProfileName())} first.</strong> ${esc(adminData.pushover_message || "Admin alerts are sent with your profile's Pushover settings. Add your Pushover user key in your profile's section of this page first.")}</div>`;
-  }
-
-  // After a profile save, the admin's Pushover status may have changed.
   async function refreshAdminReady() {
     if (!adminData || adminState !== "ready") return;
     try {
@@ -854,197 +906,133 @@
       adminData.quota = fresh.quota;
       const slot = $("#adminReady");
       if (slot) slot.innerHTML = adminNotices();
+      renderRailFoot();
     } catch (e) {
       if (isKeyProblem(e)) showKeyOnly(e.code);
     }
   }
 
-  function renderAdminAlerts() {
-    const d = adminData;
-    const dr = adminDraft;
-    $("#adminAlerts").innerHTML = `
-      <section class="card" aria-labelledby="alertsTitle">
-        <h2 id="alertsTitle">Admin alerts<span class="badge">Admin</span></h2>
-        <p class="sub">Get a Pushover alert when someone plays something on your server, when streams go over the limits you set, when someone uses a new device or address, when a scan or job fails, when the server's health changes, and a weekly summary. Every alert is off until you switch it on. Alerts are sent only to you, with the Pushover settings of <strong>${esc(activeProfileName())}</strong> above; other admins set up their own. Only server admins see this section.</p>
-        <div id="adminReady">${adminNotices()}</div>
-        ${ALERT_GROUPS.map((g) => {
-          const types = d.alert_types.filter((t) => (t.group || "playback") === g.key);
-          return types.length ? `<h3>${esc(g.title)}</h3><p class="help group-sub">${esc(g.help)}</p>${g.key === "scheduled" ? scheduledSetup() : ""}<div class="alerts">${types.map(renderAlert).join("")}</div>` : "";
-        }).join("")}
-
-        <h3>Playback alert extras</h3>
-        <div class="checks" style="margin:12px 0 16px">
-          <label class="switch"><input type="checkbox" id="xPoster"${dr.attach_poster ? " checked" : ""}>
-            <span><span class="t">Attach the poster</span><br><span class="d">Adds the title's poster to the playback alerts (started, paused or resumed, stopped, failed). If it can't be downloaded in a few seconds the alert goes out without it.</span></span></label>
-          <label class="switch"><input type="checkbox" id="xLink"${dr.silo_link ? " checked" : ""}>
-            <span><span class="t">Add an "Open in Silo" link</span><br><span class="d">Playback alerts and the stream-limit alerts (too many streams, bandwidth) link to Silo's Activity page, which lists the live streams and has Stop and Message buttons. You may be asked to sign in to Silo first.</span></span></label>
-        </div>
-
-        <h3>Filters</h3>
-        <p class="help" style="margin-top:0">Filters apply to the playback alerts. Users to ignore also applies to the alerts about one account (too many streams for one person, new device and new IP address) and leaves those people out of the weekly digest's top viewers.</p>
-        <div class="checks" style="margin:12px 0 16px">
-          <label class="switch"><input type="checkbox" id="fRemote"${dr.filters.only_remote ? " checked" : ""}>
-            <span><span class="t">Only remote streams</span><br><span class="d">Skips streams Silo sees as local. A stream whose location Silo can't tell counts as local.</span></span></label>
-          <label class="switch"><input type="checkbox" id="fTranscode"${dr.filters.only_transcodes ? " checked" : ""}>
-            <span><span class="t">Only transcodes</span><br><span class="d">Skips direct play and direct stream.</span></span></label>
-        </div>
-        <fieldset class="field">
-          <legend class="lbl">Media types</legend>
-          <div class="pick inline">${mediaTypeChecks()}</div>
-          <div class="help">Leave all unticked to hear about every kind of media.</div>
-        </fieldset>
-        <fieldset class="field">
-          <legend class="lbl">Libraries</legend>
-          <div class="pick inline">${libraryChecks()}</div>
-          <div class="help">Leave all unticked to hear about every library. With any ticked, something Silo's catalog doesn't place in a library (audiobooks, for one) is skipped.</div>
-        </fieldset>
-        <div class="field">
-          <label class="lbl" id="ignoreLbl">Users to ignore</label>
-          <div id="userPick"></div>
-          <div class="help">Nothing is sent about the people you tick, whatever they play.</div>
-        </div>
-
-        <h3>Noise</h3>
-        <fieldset class="field" aria-label="Noise mode">
-          ${d.noise_modes.map((m) => noiseChoice(m, dr.noise.mode)).join("")}
-        </fieldset>
-        <div class="field" id="noiseWindowField">
-          <label class="lbl" for="noiseWindow" id="noiseWindowLbl"></label>
-          <input type="number" class="narrow" id="noiseWindow" min="1" max="1440" step="1" inputmode="numeric" value="${esc(dr.noise.window_minutes || "")}">
-          <div class="help" id="noiseWindowHelp"></div>
-        </div>
-        <p class="help">Playback failed alerts ignore the noise mode and always come through when they're switched on. Your filters still apply to them.</p>
-
-        <h3>Quiet hours</h3>
-        <div class="checks" style="margin:12px 0 4px">
-          <label class="switch"><input type="checkbox" id="qOn"${dr.quiet.enabled ? " checked" : ""}>
-            <span><span class="t">Turn alerts down at night</span><br><span class="d">Between the times below your admin alerts go out at low priority: no sound or vibration. They still arrive and wait in the Pushover app.</span></span></label>
-        </div>
-        <div class="times">
-          <label for="qStart">From</label><input type="time" id="qStart" value="${esc(dr.quiet.start)}">
-          <label for="qEnd">until</label><input type="time" id="qEnd" value="${esc(dr.quiet.end)}">
-          <span class="muted" id="qZone">${esc(zoneLabel())}</span>
-        </div>
-        <div class="checks" style="margin:12px 0 16px">
-          <label class="switch"><input type="checkbox" id="qSilence"${dr.quiet.silence_emergency ? " checked" : ""}>
-            <span><span class="t">Turn emergency alerts down too</span><br><span class="d">Off by default: an alert set to Emergency priority still rings during quiet hours. The time zone is read from this browser and saved with your settings.</span></span></label>
-        </div>
-
-        <div class="actions">
-          <button class="btn primary" type="button" id="adminSave">Save admin alerts</button>
-          <button class="btn danger" type="button" id="adminRemove"${d.configured ? "" : " hidden"}>Remove my admin alerts</button>
-          <span class="help" id="adminMsg" role="status" aria-live="polite"></span>
-        </div>
-      </section>`;
-    renderUserPick();
-    syncNoiseWindow();
-    bindAdminAlerts();
-    d.alert_types.forEach(updateAlertPreview);
+  function adminNotices() {
+    let html = "";
+    if (adminData && !adminData.pushover_ready) {
+      html += `<div class="notice warn"><strong>Set up your Pushover account first.</strong>Admin alerts use your own profile's Pushover settings. <button class="link" type="button" data-goto="account">Pushover account</button></div>`;
+    }
+    const q = adminData && adminData.quota;
+    if (q && q.low) {
+      html += `<div class="notice warn"><strong>Your Pushover application is nearly out of messages.</strong>${esc(Number(q.remaining).toLocaleString())} left this month. Mute noisy alerts or use your own application token.</div>`;
+    }
+    return html;
   }
 
-  function renderAlert(t) {
+  function renderAdmin() {
+    const box = $("#panel-admin");
+    if (!state || !state.admin) { box.innerHTML = ""; return; }
+    if (adminState === "loading") { box.innerHTML = `<div class="skeleton"></div>`; return; }
+    if (adminState === "key") {
+      box.innerHTML = `<section class="card"><h2>Admin alerts are off</h2>
+        <span class="help">${esc(KEY_PROBLEMS[adminProblem] || KEY_PROBLEMS.monitor_key_missing)}</span>
+        <div class="actions"><button class="btn primary" type="button" data-goto="keys">Set up the key</button></div></section>`;
+      bindGoto(box);
+      return;
+    }
+    if (adminState === "error") {
+      box.innerHTML = `<div class="notice error"><strong>Couldn't load your admin alert settings.</strong>${esc(adminProblem)}
+        <div class="actions"><button class="btn" type="button" id="adminRetry">Try again</button></div></div>`;
+      $("#adminRetry").addEventListener("click", loadAdmin);
+      return;
+    }
+    const subs = [["alerts", "Alerts"], ["filters", "Filters"], ["extras", "Extras"]];
+    box.innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div id="adminReady" style="display:flex;flex-direction:column;gap:12px">${adminNotices()}</div>
+        <div class="flexrow" style="justify-content:space-between;gap:12px">
+          <div class="subtabs" role="tablist" aria-label="Admin alert sections">${subs.map(([id, label]) =>
+            `<button class="subtab" type="button" role="tab" data-sub="${id}" aria-selected="${adminSub === id}">${label}</button>`).join("")}</div>
+          <span class="inline help"><span class="dot"></span>Read-only key working</span>
+        </div>
+        <div id="adminBody">${adminSub === "alerts" ? renderAlertsSub() : adminSub === "filters" ? renderFiltersSub() : renderExtrasSub()}</div>
+      </div>`;
+    $$(".subtab", box).forEach((b) => b.addEventListener("click", () => { adminSub = b.dataset.sub; renderAdmin(); }));
+    bindGoto(box);
+    if (adminSub === "alerts") bindAlertsSub(); else if (adminSub === "filters") bindFiltersSub(); else bindExtrasSub();
+  }
+
+  function bindGoto(box) {
+    $$("[data-goto]", box).forEach((b) => b.addEventListener("click", () => showTab(b.dataset.goto)));
+  }
+
+  function renderAlertsSub() {
+    return `<div style="display:flex;flex-direction:column;gap:16px">${ALERT_GROUPS.map((g) => {
+      const types = adminData.alert_types.filter((t) => (t.group || "playback") === g.key);
+      if (!types.length) return "";
+      const switchable = types.filter((t) => !t.parent);
+      const onCount = switchable.filter((t) => adminDraft.alerts[t.key].enabled).length;
+      const editing = types.find((t) => t.key === openAlert);
+      return `<section class="card" data-group="${g.key}">
+        <div class="cardHead"><h2>${esc(g.title)}</h2><span class="help">${onCount} of ${switchable.length} on</span></div>
+        ${g.key === "scheduled" ? `<span class="help">Need scheduling in Silo: see Extras.</span>` : ""}
+        <div class="tiles">${types.map(renderTile).join("")}</div>
+        ${editing ? renderAlertEditor(editing) : ""}
+      </section>`;
+    }).join("")}</div>`;
+  }
+
+  function renderTile(t) {
     const a = adminDraft.alerts[t.key];
     const id = "al_" + t.key.replace(/\W/g, "_");
-    return `
-      <div class="type" data-alert="${esc(t.key)}">
-        ${t.parent
-          ? `<div class="nosw"><span class="t">${esc(t.label)}</span><br><span class="d">${esc(t.description)}</span></div>`
-          : `<label class="switch"><input type="checkbox" data-k="enabled"${a.enabled ? " checked" : ""}>
-          <span><span class="t">${esc(t.label)}</span><br><span class="d">${esc(t.description)}${t.noise_controlled || t.group !== "playback" ? "" : " Always sent when it's on, whatever the noise mode."}</span></span></label>`}
-        ${(t.limits || []).map((l) => limitRow(t, l, id)).join("")}
-        ${t.key === "digest.weekly" ? digestRow(id) : ""}
-        <details>
-          <summary>Customize wording</summary>
-          <div class="editor">
-            <div class="field"><label class="lbl" for="${id}_title">Title</label>
-              <input type="text" id="${id}_title" data-k="title" value="${esc(a.title)}"></div>
-            <div class="field"><label class="lbl" for="${id}_message">Message</label>
-              <textarea id="${id}_message" data-k="message" rows="3">${esc(a.message)}</textarea>
-              <div class="chips" aria-label="Insert a placeholder">${t.placeholders.map((p) => `<button class="chip" type="button" data-insert="{${esc(p)}}">{${esc(p)}}</button>`).join("")}</div>
-            </div>
-            <div class="grid">
-              <div class="field"><label class="lbl" for="${id}_priority">Priority</label>
-                <select id="${id}_priority" data-k="priority">${priorityOptions(a.priority ?? null, true, "Same as my profile", ADMIN_PRIORITIES)}</select></div>
-              <div class="field"><label class="lbl" for="${id}_sound">Sound</label>
-                <select id="${id}_sound" data-k="sound">${soundOptions(a.sound || "", "Same as my profile")}</select></div>
-            </div>
-            <div class="preview" aria-live="polite"><div class="pl">Preview with sample data</div><div class="pt"></div><div class="pm"></div></div>
-            <div class="actions">
-              <button class="btn" type="button" data-test>Send test</button>
-              <button class="link" type="button" data-reset>Reset wording</button>
-              <span class="help" data-test-msg role="status" aria-live="polite"></span>
-            </div>
-          </div>
-        </details>
-      </div>`;
-  }
-
-  const ALERT_GROUPS = [
-    { key: "playback", title: "Playback", help: "One alert per stream event. The noise mode below thins these out." },
-    { key: "watchdog", title: "Watchdog", help: "Limits, and accounts showing up somewhere new. Each comes once per change, so the noise mode doesn't apply." },
-    { key: "server", title: "Server problems", help: "Sent every time, whatever the noise mode." },
-    { key: "scheduled", title: "Scheduled checks", help: "Silo runs these on a schedule, so they only work once the tasks are turned on (see below). Sent every time, whatever the noise mode." },
-  ];
-
-  // How to turn on the scheduled tasks. Silo runs a plugin's task only when an
-  // admin binds it to a schedule, and a binding change needs a Silo restart.
-  function scheduledSetup() {
-    return `<details class="plain setup" id="taskSetup">
-      <summary>How to turn the scheduled tasks on</summary>
-      <p class="help">The switches below say who gets the alerts. Silo only runs the checks when you give them a schedule, and the plugin can't do that for you. Once, as the server admin:</p>
-      <ol class="help">
-        <li>Open <strong>Admin &gt; Plugins</strong> and open <strong>Pushover Notifications</strong>.</li>
-        <li>Under its scheduled tasks, switch on <strong>Pushover server health check</strong> and set it to run every 5 minutes, and <strong>Pushover weekly digest</strong> set to run <strong>every 1 hour</strong>, not weekly. Each admin picks their own digest day and hour below, and a run sends a digest in that hour, or in a later run within 6 hours after it (so a week isn't lost if Silo was down), so an hourly schedule is what lets every admin's choice work.</li>
-        <li><strong>Restart Silo.</strong> A change to a task's schedule only takes effect after a restart, and Silo says when one is needed.</li>
-      </ol>
-      <p class="help">Or do it with the API, using an admin API key (replace <code>ID</code> with this plugin's installation number from Admin &gt; Plugins):</p>
-      <pre>PUT /api/v2/admin/plugins/installations/ID/task-bindings/health_check
-{"enabled": true, "trigger": {"type": "interval", "interval_ms": 300000}}
-
-PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
-{"enabled": true, "trigger": {"type": "interval", "interval_ms": 3600000}}</pre>
-      <p class="help">Until a task has a schedule, Silo runs it once each time it starts (a digest goes out then only if the restart falls within 6 hours after an admin's chosen hour, and never more than once a week). Both tasks need the read-only Silo key, and each admin switches the alerts on for themselves here. A health check tells you about a problem once, then again when it's fixed.</p>
-    </details>`;
-  }
-
-  const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-
-  // When the weekly digest goes out: the admin's day and hour, in their time
-  // zone. The scheduled task runs hourly and sends in that hour or, if that
-  // run was missed, in a later one within 6 hours.
-  function digestRow(id) {
-    const d = adminDraft.digest;
-    const hours = Array.from({ length: 24 }, (_, h) => `<option value="${h}"${h === d.hour ? " selected" : ""}>${String(h).padStart(2, "0")}:00</option>`).join("");
-    return `<div class="limit"><label for="${id}_day">Send it on</label>
-      <select id="${id}_day" data-digest="day">${DAYS.map((n, i) => `<option value="${i}"${i === d.day ? " selected" : ""}>${n}</option>`).join("")}</select>
-      <label for="${id}_hour">at</label>
-      <select id="${id}_hour" data-digest="hour">${hours}</select>
-      <span class="muted">${esc(zoneLabel())}</span></div>`;
+    const parent = t.parent ? adminData.alert_types.find((x) => x.key === t.parent) : null;
+    const open = openAlert === t.key;
+    return `<div class="tile${open ? " open" : ""}" data-alert="${esc(t.key)}">
+      <div class="top">
+        ${parent ? `<span class="name">${esc(t.label)}</span>` : `<label class="sw"><input type="checkbox" data-k="enabled"${a.enabled ? " checked" : ""}>${esc(t.label)}</label>`}
+        <button class="btn icon ghost" type="button" data-edit aria-expanded="${open}" aria-label="Edit wording for ${esc(t.label)}">${ICON_EDIT}</button>
+      </div>
+      <div class="meta">${parent ? `Follows ${esc(parent.label)} · ` : ""}${esc(metaLine(a.sound, a.priority ?? null, "Default"))}</div>
+      ${(t.limits || []).map((l) => limitRow(t, l, id)).join("")}
+      ${t.key === "bandwidth" ? `<label class="sw sm"><input type="checkbox" data-remote-only${adminDraft.limits.bandwidth_remote_only ? " checked" : ""}>Remote streams only</label>` : ""}
+      ${t.key === "digest.weekly" ? digestRow(id) : ""}
+    </div>`;
   }
 
   function limitRow(t, lim, id) {
     const v = adminDraft.limits[lim.key];
-    const remote = t.key === "bandwidth"
-      ? `<label class="switch"><input type="checkbox" data-remote-only${adminDraft.limits.bandwidth_remote_only ? " checked" : ""}>
-          <span><span class="t">Count only remote streams</span><br><span class="d">For a limit on your upload: local streams don't use it.</span></span></label>`
-      : "";
-    const lid = `${id}_${lim.key}`;
-    return `<div class="limit"><label for="${lid}">${esc(lim.label)}</label>
-      <input type="number" id="${lid}" data-limit="${esc(lim.key)}" min="1" max="${esc(lim.max)}" step="1" inputmode="numeric" value="${esc(v || "")}"${lim.optional ? ` placeholder="off"` : ""}>
-      <span class="muted">${esc(lim.unit)}</span>${remote}</div>`;
+    const short = { user_streams: "More than", server_streams: "More than", bandwidth_mbps: "Over", disk_pct: "Disk over", memory_pct: "Memory over" }[lim.key] || lim.label;
+    const unit = lim.unit.replace(/^% full$/, "%");
+    return `<label class="inline">${esc(short)}<input type="number" class="num" id="${id}_${esc(lim.key)}" data-limit="${esc(lim.key)}" min="1" max="${esc(lim.max)}" step="1" inputmode="numeric" value="${esc(v || "")}"${lim.optional ? ` placeholder="off"` : ""} aria-label="${esc(lim.label)}">${esc(unit)}</label>`;
   }
 
-  function libraryChecks() {
-    const known = (adminData.libraries || []).map((l) => ({ value: l.id, label: l.name || "Library " + l.id }));
-    // Keep libraries saved earlier that Silo no longer lists.
-    adminDraft.filters.libraries.forEach((v) => { if (!known.some((m) => m.value === v)) known.push({ value: v, label: "Library " + v + " (not found)" }); });
-    if (!known.length) return `<span class="help">Silo didn't list any libraries.</span>`;
-    return known.map((m) =>
-      `<label><input type="checkbox" data-library="${esc(m.value)}"${adminDraft.filters.libraries.includes(m.value) ? " checked" : ""}> ${esc(m.label)}</label>`).join("");
+  function digestRow(id) {
+    const d = adminDraft.digest;
+    const hours = Array.from({ length: 24 }, (_, h) => `<option value="${h}"${h === d.hour ? " selected" : ""}>${String(h).padStart(2, "0")}:00</option>`).join("");
+    return `<span class="inline" style="font-size:13px">
+      <select class="auto" id="${id}_day" data-digest="day" aria-label="Digest day">${DAYS.map((n, i) => `<option value="${i}"${i === d.day ? " selected" : ""}>${n}</option>`).join("")}</select>
+      at <select class="auto" id="${id}_hour" data-digest="hour" aria-label="Digest hour">${hours}</select></span>`;
+  }
+
+  function renderAlertEditor(t) {
+    const a = adminDraft.alerts[t.key];
+    const id = "ed_" + t.key.replace(/\W/g, "_");
+    return `<div class="editor" data-editor="${esc(t.key)}">
+      <div class="col">
+        <div class="cardHead"><b style="font-size:14px">Wording: ${esc(t.label)}</b><button class="btn ghost" type="button" data-close>Done</button></div>
+        <div class="field"><label class="lbl" for="${id}_title">Title</label><input type="text" id="${id}_title" data-k="title" value="${esc(a.title)}"></div>
+        <div class="field"><label class="lbl" for="${id}_message">Message</label><textarea id="${id}_message" data-k="message" rows="3">${esc(a.message)}</textarea></div>
+        <div class="chips" aria-label="Insert a placeholder">${t.placeholders.map((p) => `<button class="chip" type="button" data-insert="{${esc(p)}}">{${esc(p)}}</button>`).join("")}</div>
+      </div>
+      <div class="col">
+        <div class="cols" style="gap:12px">
+          <div class="field"><label class="lbl" for="${id}_sound">Sound</label><select id="${id}_sound" data-k="sound">${soundOptions(a.sound || "", "Same as account")}</select></div>
+          <div class="field"><label class="lbl" for="${id}_priority">Priority</label><select id="${id}_priority" data-k="priority">${priorityOptions(a.priority ?? null, true, "Same as account", ADMIN_PRIORITIES)}</select></div>
+        </div>
+        <span class="lbl">Preview</span>
+        <div class="preview" aria-live="polite"><div class="pt"></div><div class="pm"></div></div>
+        <div class="actions"><button class="btn" type="button" data-test>Send test</button><button class="btn ghost" type="button" data-reset>Reset wording</button><span class="help" data-test-msg role="status" aria-live="polite"></span></div>
+      </div>
+    </div>`;
   }
 
   function updateAlertPreview(t) {
-    const box = $(`#adminAlerts .type[data-alert="${CSS.escape(t.key)}"]`);
+    const box = $(`#panel-admin [data-editor="${CSS.escape(t.key)}"]`);
     if (!box) return;
     const a = adminDraft.alerts[t.key];
     const vars = { ...t.sample, type: t.key, type_label: t.label };
@@ -1052,12 +1040,88 @@ PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
     $(".pm", box).textContent = render(a.message, vars) || "(no message)";
   }
 
-  function mediaTypeChecks() {
-    const known = adminData.media_types.map((m) => m);
-    // Keep types saved earlier that this list doesn't offer.
-    adminDraft.filters.media_types.forEach((v) => { if (!known.some((m) => m.value === v)) known.push({ value: v, label: v }); });
-    return known.map((m) =>
-      `<label><input type="checkbox" data-media="${esc(m.value)}"${adminDraft.filters.media_types.includes(m.value) ? " checked" : ""}> ${esc(m.label)}</label>`).join("");
+  function tileMeta(t) {
+    const tile = $(`#panel-admin .tile[data-alert="${CSS.escape(t.key)}"] .meta`);
+    if (!tile) return;
+    const a = adminDraft.alerts[t.key];
+    const parent = t.parent ? adminData.alert_types.find((x) => x.key === t.parent) : null;
+    tile.textContent = (parent ? `Follows ${parent.label} · ` : "") + metaLine(a.sound, a.priority ?? null, "Default");
+  }
+
+  function bindAlertsSub() {
+    const box = $("#panel-admin");
+    $$(".tile", box).forEach((tile) => {
+      const t = adminData.alert_types.find((x) => x.key === tile.dataset.alert);
+      const a = adminDraft.alerts[t.key];
+      const sw = $("[data-k=enabled]", tile);
+      if (sw) sw.addEventListener("change", () => {
+        a.enabled = sw.checked;
+        adminData.alert_types.filter((x) => x.parent === t.key).forEach((x) => { adminDraft.alerts[x.key].enabled = a.enabled; });
+        markAdminDirty();
+        const head = $(`[data-group="${t.group || "playback"}"] .cardHead .help`, box);
+        if (head) {
+          const sws = adminData.alert_types.filter((x) => (x.group || "playback") === (t.group || "playback") && !x.parent);
+          head.textContent = `${sws.filter((x) => adminDraft.alerts[x.key].enabled).length} of ${sws.length} on`;
+        }
+      });
+      $("[data-edit]", tile).addEventListener("click", () => { openAlert = openAlert === t.key ? null : t.key; renderAdmin(); });
+    });
+    $$("[data-limit]", box).forEach((input) => input.addEventListener("input", () => {
+      adminDraft.limits[input.dataset.limit] = input.value === "" ? 0 : Math.round(Number(input.value));
+      markAdminDirty();
+    }));
+    $$("[data-remote-only]", box).forEach((c) => c.addEventListener("change", () => { adminDraft.limits.bandwidth_remote_only = c.checked; markAdminDirty(); }));
+    $$("[data-digest]", box).forEach((s) => s.addEventListener("change", () => { adminDraft.digest[s.dataset.digest] = Number(s.value); markAdminDirty(); }));
+
+    const ed = $("[data-editor]", box);
+    if (!ed) return;
+    const t = adminData.alert_types.find((x) => x.key === ed.dataset.editor);
+    const a = adminDraft.alerts[t.key];
+    $$("[data-k]", ed).forEach((input) => {
+      const k = input.dataset.k;
+      const ev = input.tagName === "SELECT" ? "change" : "input";
+      input.addEventListener(ev, () => {
+        if (k === "priority") a.priority = input.value === "" ? null : Number(input.value);
+        else a[k] = input.value;
+        markAdminDirty();
+        if (k === "sound" || k === "priority") tileMeta(t);
+        updateAlertPreview(t);
+      });
+      if (k === "title" || k === "message") input.addEventListener("focus", () => (adminField = input));
+    });
+    bindChips(ed, "data-insert", () => $("[data-k=message]", ed), () => adminField);
+    $("[data-close]", ed).addEventListener("click", () => { openAlert = null; renderAdmin(); });
+    $("[data-reset]", ed).addEventListener("click", () => {
+      a.title = t.default_title; a.message = t.default_message;
+      $("[data-k=title]", ed).value = a.title;
+      $("[data-k=message]", ed).value = a.message;
+      markAdminDirty(); updateAlertPreview(t);
+    });
+    $("[data-test]", ed).addEventListener("click", (e) =>
+      runTest(e.target, $("[data-test-msg]", ed), "api/admin/alerts/test", { settings: adminPayload(), alert: t.key }, (err) => showKeyOnly(err.code)));
+    updateAlertPreview(t);
+  }
+
+  function renderFiltersSub() {
+    const f = adminDraft.filters;
+    const media = adminData.media_types.map((m) => m);
+    f.media_types.forEach((v) => { if (!media.some((m) => m.value === v)) media.push({ value: v, label: v }); });
+    const libs = (adminData.libraries || []).map((l) => ({ value: l.id, label: l.name || "Library " + l.id }));
+    f.libraries.forEach((v) => { if (!libs.some((m) => m.value === v)) libs.push({ value: v, label: "Library " + v + " (not found)" }); });
+    return `<section class="card">
+      <div class="flexrow">
+        <label class="sw"><input type="checkbox" id="fRemote"${f.only_remote ? " checked" : ""}>Only remote streams</label>
+        <label class="sw"><input type="checkbox" id="fTranscode"${f.only_transcodes ? " checked" : ""}>Only transcodes</label>
+      </div>
+      <div class="field"><span class="lbl" id="ignoreLbl">Ignore these users</span><div id="userPick"></div></div>
+      <div class="cols">
+        <div class="field"><span class="lbl">Media types <span class="muted" style="font-weight:400">(none = all)</span></span>
+          <div class="pills">${media.map((m) => `<label class="pill"><input type="checkbox" data-media="${esc(m.value)}"${f.media_types.includes(m.value) ? " checked" : ""}>${esc(m.label)}</label>`).join("")}</div></div>
+        <div class="field"><span class="lbl">Libraries <span class="muted" style="font-weight:400">(none = all)</span></span>
+          <div class="pills">${libs.length ? libs.map((m) => `<label class="pill"><input type="checkbox" data-library="${esc(m.value)}"${f.libraries.includes(m.value) ? " checked" : ""}>${esc(m.label)}</label>`).join("") : `<span class="help">Silo didn't list any libraries.</span>`}</div></div>
+      </div>
+      <span class="help">Filters apply to playback alerts. Ignored users are also left out of per-account alerts and the digest's top viewers.</span>
+    </section>`;
   }
 
   function renderUserPick() {
@@ -1066,14 +1130,10 @@ PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
     const ignored = adminDraft.filters.ignore_users;
     const rows = adminUsers.map((u) => ({ id: u.id, name: u.username + (u.enabled ? "" : " (disabled)") }));
     ignored.forEach((id) => { if (!rows.some((r) => r.id === id)) rows.push({ id, name: `Unknown account (${id})` }); });
-    let html = "";
-    if (adminUsersError) {
-      html += `<div class="help status-err">Couldn't load the list of accounts: ${esc(adminUsersError)} <button class="link" type="button" id="usersRetry">Try again</button></div>`;
-    }
-    html += rows.length
-      ? `<div class="pick" role="group" aria-labelledby="ignoreLbl">${rows.map((r) =>
-        `<label><input type="checkbox" data-user="${esc(r.id)}"${ignored.includes(r.id) ? " checked" : ""}> ${esc(r.name)}</label>`).join("")}</div>`
-      : (adminUsersError ? "" : `<div class="help">No accounts to list.</div>`);
+    let html = adminUsersError ? `<span class="help status-err">Couldn't load accounts: ${esc(adminUsersError)} <button class="link" type="button" id="usersRetry">Try again</button></span>` : "";
+    html += rows.length ? `<div class="pills" role="group" aria-labelledby="ignoreLbl">${rows.map((r) =>
+      `<label class="pill"><input type="checkbox" data-user="${esc(r.id)}"${ignored.includes(r.id) ? " checked" : ""}>${esc(r.name)}</label>`).join("")}</div>`
+      : (adminUsersError ? "" : `<span class="help">No accounts to list.</span>`);
     slot.innerHTML = html;
     $$("[data-user]", slot).forEach((c) => c.addEventListener("change", () => {
       const list = adminDraft.filters.ignore_users.filter((id) => id !== c.dataset.user);
@@ -1096,173 +1156,128 @@ PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
     });
   }
 
-  function noiseChoice(m, current) {
-    const h = NOISE_HELP[m.value] || { title: m.label, text: "" };
-    return `<label class="choice"><input type="radio" name="noiseMode" value="${esc(m.value)}"${m.value === current ? " checked" : ""}>
-      <span><span class="t">${esc(h.title)}</span><br><span class="d">${esc(h.text)}</span></span></label>`;
-  }
-
-  // Shows the window field for the modes that use it.
-  function syncNoiseWindow() {
-    const h = NOISE_HELP[adminDraft.noise.mode] || {};
-    $("#noiseWindowField").hidden = !h.window;
-    $("#noiseWindowLbl").textContent = h.window || "";
-    $("#noiseWindowHelp").textContent = h.windowHelp || "";
-  }
-
-  function bindAdminAlerts() {
-    $$("#adminAlerts .type").forEach((box) => {
-      const t = adminData.alert_types.find((x) => x.key === box.dataset.alert);
-      const a = adminDraft.alerts[t.key];
-      $$("[data-k]", box).forEach((input) => {
-        const k = input.dataset.k;
-        const ev = input.tagName === "SELECT" || input.type === "checkbox" ? "change" : "input";
-        input.addEventListener(ev, () => {
-          if (k === "enabled") {
-            a.enabled = input.checked;
-            // An alert that follows this one's switch.
-            adminData.alert_types.filter((x) => x.parent === t.key).forEach((x) => { adminDraft.alerts[x.key].enabled = a.enabled; });
-          }
-          else if (k === "priority") a.priority = input.value === "" ? null : Number(input.value);
-          else a[k] = input.value;
-          markAdminDirty();
-          updateAlertPreview(t);
-        });
-        if (k === "title" || k === "message") input.addEventListener("focus", () => (adminField = input));
-      });
-      $$("[data-insert]", box).forEach((chip) => chip.addEventListener("click", () => {
-        const target = adminField && box.contains(adminField) ? adminField : $("[data-k=message]", box);
-        const s = target.selectionStart ?? target.value.length, e = target.selectionEnd ?? s;
-        target.value = target.value.slice(0, s) + chip.dataset.insert + target.value.slice(e);
-        target.focus();
-        target.setSelectionRange(s + chip.dataset.insert.length, s + chip.dataset.insert.length);
-        target.dispatchEvent(new Event("input"));
-      }));
-      $("[data-reset]", box).addEventListener("click", () => {
-        a.title = t.default_title; a.message = t.default_message;
-        $("[data-k=title]", box).value = a.title;
-        $("[data-k=message]", box).value = a.message;
-        markAdminDirty();
-        updateAlertPreview(t);
-      });
-      $("[data-test]", box).addEventListener("click", (e) => sendAdminTest(t, e.target, $("[data-test-msg]", box)));
-    });
-
+  function bindFiltersSub() {
     const f = adminDraft.filters;
     $("#fRemote").addEventListener("change", (e) => { f.only_remote = e.target.checked; markAdminDirty(); });
     $("#fTranscode").addEventListener("change", (e) => { f.only_transcodes = e.target.checked; markAdminDirty(); });
-    $$("[data-media]").forEach((c) => c.addEventListener("change", () => {
+    $$("#panel-admin [data-media]").forEach((c) => c.addEventListener("change", () => {
       f.media_types = f.media_types.filter((v) => v !== c.dataset.media);
       if (c.checked) f.media_types.push(c.dataset.media);
       markAdminDirty();
     }));
-    $$("#adminAlerts [data-library]").forEach((c) => c.addEventListener("change", () => {
+    $$("#panel-admin [data-library]").forEach((c) => c.addEventListener("change", () => {
       f.libraries = f.libraries.filter((v) => v !== c.dataset.library);
       if (c.checked) f.libraries.push(c.dataset.library);
       markAdminDirty();
     }));
-    $$("#adminAlerts [data-limit]").forEach((input) => input.addEventListener("input", () => {
-      adminDraft.limits[input.dataset.limit] = input.value === "" ? 0 : Math.round(Number(input.value));
-      markAdminDirty();
-    }));
-    $$("#adminAlerts [data-remote-only]").forEach((c) => c.addEventListener("change", () => {
-      adminDraft.limits.bandwidth_remote_only = c.checked;
-      markAdminDirty();
-    }));
-    $$("#adminAlerts [data-digest]").forEach((s) => s.addEventListener("change", () => {
-      adminDraft.digest[s.dataset.digest] = Number(s.value);
-      markAdminDirty();
-    }));
-    const flag = (sel, set) => $(sel).addEventListener("change", (e) => { set(e.target.checked); markAdminDirty(); });
-    flag("#xPoster", (v) => { adminDraft.attach_poster = v; });
-    flag("#xLink", (v) => { adminDraft.silo_link = v; });
-    flag("#qOn", (v) => { adminDraft.quiet.enabled = v; });
-    flag("#qSilence", (v) => { adminDraft.quiet.silence_emergency = v; });
-    $("#qStart").addEventListener("input", (e) => { adminDraft.quiet.start = e.target.value; markAdminDirty(); });
-    $("#qEnd").addEventListener("input", (e) => { adminDraft.quiet.end = e.target.value; markAdminDirty(); });
-    $$("input[name=noiseMode]").forEach((r) => r.addEventListener("change", () => {
+    renderUserPick();
+  }
+
+  function renderExtrasSub() {
+    const dr = adminDraft;
+    const nw = NOISE[dr.noise.mode] || {};
+    return `<div style="display:flex;flex-direction:column;gap:16px">
+      <section class="card">
+        <h2>Noise control</h2>
+        <div class="modes" role="radiogroup" aria-label="Noise control">${adminData.noise_modes.map((m) => {
+          const h = NOISE[m.value] || { title: m.label, text: "" };
+          return `<label class="mode"><input type="radio" name="noiseMode" value="${esc(m.value)}"${m.value === dr.noise.mode ? " checked" : ""}><span><b>${esc(h.title)}</b><span>${esc(h.text)}</span></span></label>`;
+        }).join("")}</div>
+        <label class="inline" id="noiseWindowField"${nw.window ? "" : " hidden"}><span id="noiseWindowLbl">${esc(nw.window || "")}</span><input type="number" class="num" id="noiseWindow" min="1" max="1440" step="1" inputmode="numeric" value="${esc(dr.noise.window_minutes || "")}">minutes</label>
+        <span class="help">Playback failures always come through.</span>
+      </section>
+      <section class="card">
+        <h2>On admin alerts</h2>
+        <div class="flexrow">
+          <label class="sw"><input type="checkbox" id="xPoster"${dr.attach_poster ? " checked" : ""}>Attach the poster</label>
+          <label class="sw"><input type="checkbox" id="xLink"${dr.silo_link ? " checked" : ""}>"Open in Silo" link</label>
+        </div>
+        <span class="help">Quiet hours and the emergency setting are on <button class="link" type="button" data-goto="account">Pushover account</button>.</span>
+      </section>
+      <section class="card">
+        <h2>Scheduled tasks</h2>
+        <span class="help">The health check and weekly digest only run once Silo schedules them.</span>
+        <details>
+          <summary>How to schedule them</summary>
+          <ol class="help">
+            <li>Open <strong>Admin &gt; Plugins</strong> › Pushover Notifications › scheduled tasks.</li>
+            <li>Set <strong>Pushover server health check</strong> to every 5 minutes and <strong>Pushover weekly digest</strong> to every 1 hour (each admin picks their own digest day and hour on the Alerts tab).</li>
+            <li><strong>Restart Silo.</strong> Schedule changes take effect after a restart.</li>
+          </ol>
+          <span class="help">Or with an admin API key (ID = this plugin's installation number):</span>
+          <pre>PUT /api/v2/admin/plugins/installations/ID/task-bindings/health_check
+{"enabled": true, "trigger": {"type": "interval", "interval_ms": 300000}}
+
+PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
+{"enabled": true, "trigger": {"type": "interval", "interval_ms": 3600000}}</pre>
+        </details>
+      </section>
+      ${adminData.configured ? `<div class="dangerZone"><button class="btn ghost danger" type="button" id="adminRemove">Turn off and forget my admin alerts</button></div>` : ""}
+    </div>`;
+  }
+
+  function bindExtrasSub() {
+    const box = $("#panel-admin");
+    $$("input[name=noiseMode]", box).forEach((r) => r.addEventListener("change", () => {
       adminDraft.noise.mode = r.value;
-      syncNoiseWindow();
+      const nw = NOISE[r.value] || {};
+      $("#noiseWindowField").hidden = !nw.window;
+      $("#noiseWindowLbl").textContent = nw.window || "";
       markAdminDirty();
     }));
     $("#noiseWindow").addEventListener("input", (e) => {
       adminDraft.noise.window_minutes = e.target.value === "" ? 0 : Math.round(Number(e.target.value));
       markAdminDirty();
     });
-    $("#adminSave").addEventListener("click", saveAdmin);
-    $("#adminRemove").addEventListener("click", removeAdmin);
+    $("#xPoster").addEventListener("change", (e) => { adminDraft.attach_poster = e.target.checked; markAdminDirty(); });
+    $("#xLink").addEventListener("change", (e) => { adminDraft.silo_link = e.target.checked; markAdminDirty(); });
+    const rm = $("#adminRemove");
+    if (rm) rm.addEventListener("click", removeAdmin);
   }
 
   function adminPayload() {
     return {
       alerts: adminDraft.alerts, filters: adminDraft.filters, noise: adminDraft.noise, limits: adminDraft.limits,
-      quiet: adminDraft.quiet, digest: adminDraft.digest, attach_poster: adminDraft.attach_poster, silo_link: adminDraft.silo_link,
+      // Admin alerts follow the quiet hours on the Pushover account tab.
+      quiet: { enabled: false, start: "22:00", end: "07:00", silence_emergency: false },
+      digest: adminDraft.digest, attach_poster: adminDraft.attach_poster, silo_link: adminDraft.silo_link,
       time_zone: browserZone(),
     };
   }
 
-  // Returns a message when the noise window can't be saved.
-  function noiseWindowProblem() {
+  // Returns [message, input] when the admin settings can't be saved.
+  function adminProblemCheck() {
     const n = adminDraft.noise;
-    if (!(NOISE_HELP[n.mode] || {}).window) return "";
-    if (!Number.isFinite(n.window_minutes) || n.window_minutes < 1 || n.window_minutes > 1440) return "Enter a time between 1 and 1440 minutes.";
-    return "";
-  }
-
-  async function sendAdminTest(t, btn, out) {
-    btn.disabled = true;
-    out.className = "help"; out.textContent = "Sending…";
-    try {
-      await api("api/admin/alerts/test", "POST", { settings: adminPayload(), alert: t.key });
-      out.className = "help status-ok"; out.textContent = "Sent. Check your device.";
-    } catch (e) {
-      if (expired) return;
-      if (isKeyProblem(e)) { showKeyOnly(e.code); return; }
-      out.className = "help status-err"; out.textContent = e.message;
-    } finally {
-      btn.disabled = expired;
+    if ((NOISE[n.mode] || {}).window && (!Number.isFinite(n.window_minutes) || n.window_minutes < 1 || n.window_minutes > 1440)) {
+      adminSub = "extras"; renderAdmin();
+      return ["Noise window: enter 1 to 1440 minutes.", $("#noiseWindow")];
     }
-  }
-
-  // Returns [message, input] when a limit can't be saved.
-  function limitProblem() {
     for (const t of adminData.alert_types) {
       for (const lim of t.limits || []) {
         const v = adminDraft.limits[lim.key] || 0;
-        const input = $(`#adminAlerts [data-limit="${CSS.escape(lim.key)}"]`);
-        if (!Number.isFinite(v) || v < 0 || v > lim.max) return [`${t.label}: enter a limit between 1 and ${lim.max}${lim.optional ? ", or leave it empty" : ""}.`, input];
-        if (!lim.optional && adminDraft.alerts[t.key].enabled && !v) return [`${t.label}: set a limit, or switch the alert off.`, input];
+        const bad = !Number.isFinite(v) || v < 0 || v > lim.max ? `${t.label}: enter a limit from 1 to ${lim.max}${lim.optional ? ", or leave it empty" : ""}.`
+          : (!lim.optional && adminDraft.alerts[t.key].enabled && !v) ? `${t.label}: set a limit, or switch it off.` : "";
+        if (bad) {
+          adminSub = "alerts"; renderAdmin();
+          return [bad, $(`#panel-admin [data-limit="${CSS.escape(lim.key)}"]`)];
+        }
       }
     }
     return null;
   }
 
   async function saveAdmin() {
-    const btn = $("#adminSave");
-    const problem = noiseWindowProblem();
-    if (problem) { adminMessage(problem, "err"); $("#noiseWindow").focus(); return; }
-    const lp = limitProblem();
-    if (lp) { adminMessage(lp[0], "err"); if (lp[1]) lp[1].focus(); return; }
-    const q = adminDraft.quiet;
-    if (!/^\d\d:\d\d$/.test(q.start) || !/^\d\d:\d\d$/.test(q.end)) { adminMessage("Quiet hours: enter the start and end as times of day.", "err"); $("#qStart").focus(); return; }
-    if (q.enabled && q.start === q.end) { adminMessage("Quiet hours: the start and end can't be the same time.", "err"); $("#qEnd").focus(); return; }
-    btn.disabled = true;
-    adminMessage("Saving…");
     try {
       const res = await api("api/admin/alerts", "PUT", adminPayload());
       adminData.configured = true;
       adminData.settings = res.settings;
       adminDraft = draftFrom(res.settings);
       adminDirty = false;
-      renderAdminAlerts();
-      if (res.warning) adminMessage(res.warning, "err"); else adminMessage("Saved", "ok");
+      renderAdmin();
+      return res.warning || "";
     } catch (e) {
-      if (expired) return;
-      if (isKeyProblem(e)) { showKeyOnly(e.code); return; }
-      adminMessage(e.message, "err");
-    } finally {
-      const b = $("#adminSave");
-      if (b) b.disabled = expired;
+      if (isKeyProblem(e)) { showKeyOnly(e.code); return "Admin alerts weren't saved: " + (KEY_PROBLEMS[e.code] || e.message); }
+      throw e;
     }
   }
 
@@ -1270,57 +1285,58 @@ PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
     if (!confirm("Turn off your admin alerts and forget these settings?")) return;
     try {
       await api("api/admin/alerts", "DELETE");
+      adminSub = "alerts";
       await loadAdmin();
-      adminMessage("Removed", "ok");
+      setSaveMsg("Admin alerts removed", "ok");
     } catch (e) {
       if (expired) return;
       if (isKeyProblem(e)) { showKeyOnly(e.code); return; }
-      adminMessage(e.message, "err");
+      setSaveMsg(e.message, "err");
     }
   }
 
+  // ---------- Silo API keys ----------
+
   function renderKeys() {
-    const box = $("#adminKeys");
+    const box = $("#panel-keys");
     const k = state && state.admin_keys;
     if (!box || !k) return;
     // Re-rendering mustn't lose the last result or the form's state.
     const keepResult = $("#setupResult") ? $("#setupResult").innerHTML : "";
     const keepControl = $("#setupControl") ? $("#setupControl").checked : false;
-    const keepOpen = $("#keyDetails") ? $("#keyDetails").open : false;
+    const keepRevoke = $("#setupRevoke") ? $("#setupRevoke").checked : true;
     const needsKey = adminState === "key";
-    const status = (set, label, bad) => `<li>${esc(label)}: ${set ? (bad ? `<span class="status-err">${esc(bad)}</span>` : '<span class="status-ok">saved</span>') : '<span class="muted">not set</span>'}</li>`;
-    const badMonitor = needsKey && adminProblem === "monitor_key_rejected" ? "saved, but Silo rejected it"
-      : needsKey && adminProblem === "monitor_key_scope" ? "saved, but it can't look up accounts" : "";
-    const action = k.monitor_key_set ? "Replace the read-only key" : "Set up the read-only key";
+    const bad = needsKey && adminProblem === "monitor_key_rejected" ? "Rejected"
+      : needsKey && adminProblem === "monitor_key_scope" ? "Wrong scope" : "";
+    const row = (set, label, scope, use, badText) => `<div class="keyrow">
+      <span class="dot${!set ? " off" : badText ? " warn" : ""}"></span>
+      <span class="grow"><b>${esc(label)}</b><small>${esc(scope)} · ${esc(use)}</small></span>
+      <span class="help ${set && !badText ? "status-ok" : badText ? "status-err" : ""}">${set ? (badText || (label === "Read-only" && adminState === "ready" ? "Working" : "Saved")) : "Not set"}</span></div>`;
+    const action = k.monitor_key_set ? "Replace keys" : "Create keys";
     box.innerHTML = `
-      <section class="card" aria-labelledby="adminTitle">
-        <h2 id="adminTitle">Silo keys<span class="badge">Admin</span></h2>
-        <p class="sub">The plugin reads from Silo with a key that can only read (scope admin:monitor:read). With it, each account's primary profile can set up Pushover for every profile on the account, and admin alerts can check that each recipient is still an admin. Only server admins see this section.</p>
-        ${needsKey ? `<div class="notice warn"><strong>Admin alerts are off for now.</strong> ${esc(KEY_PROBLEMS[adminProblem] || KEY_PROBLEMS.monitor_key_missing)}</div>` : ""}
-        <ul class="keylist">${status(k.monitor_key_set, "Read-only key", badMonitor)}${status(k.control_key_set, "Stream-control key")}</ul>
-        ${k.monitor_key_set && !needsKey ? `<p class="help"><a href="admin/sessions">Live streams</a>: see who's streaming${k.control_key_set ? " and stop a stream, with or without a message" : ". To stop streams from there, also set up the stream-control key below"}.</p>` : ""}
-        ${k.legacy_key_stored ? `
-        <div class="notice warn"><strong>The full-access key from version 0.2.0 is still stored.</strong>
-          The plugin no longer uses it. It can use it one last time to create the read-only key, and then revokes it in Silo.
-          <div class="actions"><button class="btn primary" type="button" id="legacyBtn">Replace the old full-access key</button></div>
-        </div>` : ""}
-        <details class="plain" id="keyDetails"${needsKey || keepOpen ? " open" : ""}>
-          <summary>${action}</summary>
-          <div class="field">
-            <label class="lbl" for="setupKey">Full-access Silo API key</label>
-            <input type="password" id="setupKey" autocomplete="off" spellcheck="false" placeholder="sa_…">
-            <div class="help">Create one under Admin &gt; API Keys and paste it here. The plugin uses it once to create a key on your account with only the admin:monitor:read scope, and doesn't keep it.</div>
-          </div>
-          <div class="checks">
-            <label class="switch"><input type="checkbox" id="setupRevoke" checked>
-              <span><span class="t">Delete this key from Silo</span><br><span class="d">Revokes the key you pasted once the new key is saved and working.</span></span></label>
-            <label class="switch"><input type="checkbox" id="setupControl"${keepControl ? " checked" : ""}>
-              <span><span class="t">Also allow stopping streams</span><br><span class="d">Also creates a separate key with the admin:sessions:control scope, for stopping streams from the Live streams page.${k.legacy_key_stored ? " Applies to the old-key button too." : ""}</span></span></label>
-          </div>
-          <div class="actions"><button class="btn primary" type="button" id="setupBtn">${action}</button></div>
-        </details>
+      <div style="display:flex;flex-direction:column;gap:16px">
+      <section class="card">
+        <h2>Keys the plugin uses</h2>
+        <div class="cols" style="gap:10px">
+          ${row(k.monitor_key_set, "Read-only", "admin:monitor:read", "admin alerts, household", bad)}
+          ${row(k.control_key_set, "Stream control", "admin:sessions:control", "Stop on Live streams", "")}
+        </div>
+        ${needsKey ? `<span class="help status-err">${esc(KEY_PROBLEMS[adminProblem] || KEY_PROBLEMS.monitor_key_missing)}</span>` : ""}
+      </section>
+      ${k.legacy_key_stored ? `<div class="notice warn"><strong>The full-access key from version 0.2.0 is still stored.</strong>The plugin can use it once to create the read-only key, then revokes it.
+        <div class="actions"><button class="btn primary" type="button" id="legacyBtn">Replace the old full-access key</button></div></div>` : ""}
+      <section class="card">
+        <h2>${action}</h2>
+        <span class="help">Paste a full-access key from Admin &gt; API Keys. The plugin makes scoped keys from it and never stores it.</span>
+        <div class="field"><label class="lbl" for="setupKey">Full-access key</label><input type="password" id="setupKey" autocomplete="off" spellcheck="false" placeholder="sa_…"></div>
+        <div class="flexrow">
+          <label class="sw"><input type="checkbox" id="setupRevoke"${keepRevoke ? " checked" : ""}>Delete this key from Silo afterwards</label>
+          <label class="sw"><input type="checkbox" id="setupControl"${keepControl ? " checked" : ""}>Also allow stopping streams</label>
+        </div>
+        <div class="actions"><button class="btn primary" type="button" id="setupBtn">${action}</button></div>
         <div id="setupResult" role="status" aria-live="polite">${keepResult}</div>
-      </section>`;
+      </section>
+      </div>`;
     $("#setupBtn").addEventListener("click", () => runSetup("paste"));
     const legacy = $("#legacyBtn");
     if (legacy) legacy.addEventListener("click", () => runSetup("legacy"));
@@ -1340,7 +1356,7 @@ PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
     } else if (!confirm("Use the old full-access key to create the read-only key, then revoke the old key in Silo?")) {
       return;
     }
-    $$("#adminKeys input, #adminKeys button").forEach((e) => (e.disabled = true));
+    $$("#panel-keys input, #panel-keys button").forEach((e) => (e.disabled = true));
     $("#setupResult").innerHTML = `<p class="help">Setting up the key. This takes a few seconds…</p>`;
     let res = null, error = null;
     try { res = await api("api/admin/key-setup", "POST", body); } catch (e) { error = e; }
@@ -1361,10 +1377,12 @@ PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
       if (source === "paste") $("#setupKey").value = pasted;
       showSetupResult("error", "The key setup didn't finish.", [error.message]);
     }
+    renderRailFoot();
     // A new key may make the alert settings available (or fix a broken key).
     if (state.admin_keys.monitor_key_set && (res ? res.saved : true) && adminState !== "ready") loadAdmin();
   }
 
+  window.addEventListener("hashchange", () => { if (state) showTab(location.hash.slice(1)); });
   window.addEventListener("beforeunload", (e) => { if ((dirty || adminDirty) && !expired) e.preventDefault(); });
 
   init();
