@@ -136,6 +136,8 @@ type playback struct {
 	MediaType, MediaTitle, Series, EpisodeTitle string
 	Season, Episode                             *int
 	ContentID                                   string
+	// PosterURL is the item's poster from Silo's live row (a stop has none).
+	PosterURL string
 
 	DeviceID, Platform, ClientName, ClientVersion, ClientLabel, ClientIP string
 
@@ -201,6 +203,7 @@ func (pb *playback) fromSession(s *adminSession) {
 		pb.EpisodeTitle = s.MediaTitle
 	}
 	pb.Season, pb.Episode, pb.ContentID = s.SeasonNumber, s.EpisodeNumber, s.ContentID
+	pb.PosterURL = s.PosterURL
 	pb.DeviceID, pb.Platform, pb.ClientName, pb.ClientVersion = s.DeviceID, s.DevicePlatform, s.ClientName, s.ClientVersion
 	pb.ClientLabel, pb.ClientIP, pb.Location = s.ClientLabel, s.ClientIP, s.StreamLocation
 	pb.Method = s.EffectivePlayMethod

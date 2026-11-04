@@ -120,6 +120,9 @@ type trackedSession struct {
 	// history entries.
 	Device string `json:"device,omitempty"`
 	Kbps   int64  `json:"kbps,omitempty"`
+	// Poster is the item's poster URL, kept so a stop (whose history entry has
+	// none) can still attach it.
+	Poster string `json:"poster,omitempty"`
 }
 
 // active reports whether the session was playing at, or stopped less than
@@ -153,6 +156,9 @@ func (m *trackedSession) lastSeen() time.Time {
 // fromRow copies what Silo's live row says about the stream.
 func (m *trackedSession) fromRow(pb playback) {
 	m.Location, m.Method, m.Device, m.Kbps = pb.Location, pb.Method, pb.ClientLabel, pb.BitrateKbps
+	if pb.PosterURL != "" {
+		m.Poster = pb.PosterURL
+	}
 }
 
 // sessionTable is the "sessions" key, by session ID.
@@ -405,6 +411,9 @@ func (w *watchStore) decide(ctx context.Context, log *slog.Logger, ev *watchEven
 		}
 		if pb.ClientLabel == "" {
 			pb.ClientLabel = m.Device
+		}
+		if pb.PosterURL == "" {
+			pb.PosterURL = m.Poster
 		}
 	}
 	sessions.note(*pb)

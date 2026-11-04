@@ -34,9 +34,11 @@ import (
 //     admin's change counter plus the problems involved. A run that crashes
 //     or fails after sending repeats the same change with the same ID and
 //     sends nothing twice; the state only moves on once the sends are done.
-//   - A digest's ID is the ISO week of the run, so a repeat run (a restart,
-//     a second Silo server, or a binding left on its startup trigger) sends
-//     at most one digest per admin a week.
+//   - A digest's ID is the ISO week of the run in the admin's time zone, so a
+//     repeat run (a restart, a second Silo server, or a binding left on its
+//     startup trigger) sends at most one digest per admin a week. The task is
+//     meant to run every hour: an admin's digest goes out only in the hour
+//     they chose, since a run can't tell a scheduled start from a restart.
 //
 // Both go to admins who switched them on, after their role is re-checked with
 // the read-only key, like every admin alert. A run has Silo's 10 s call
@@ -871,13 +873,24 @@ func (p *Plugin) runDigest(ctx context.Context, now time.Time) (map[string]any, 
 	if len(candidates) == 0 {
 		return map[string]any{"status": "skipped: no admin has the weekly digest on"}, nil
 	}
+	// Silo runs the task every hour (or once at each start, when it isn't
+	// bound), and can't say which: each admin's digest goes out only in their
+	// chosen hour, in their time zone, and at most once per ISO week of that
+	// time zone.
+	var due []*recipient
+	for _, r := range candidates {
+		if r.admin.digestDue(now) {
+			week := isoWeek(now.In(r.admin.location()))
+			due = append(due, newRecipient(r.admin, alertDigest, "digest:"+week))
+		}
+	}
+	if len(due) == 0 {
+		return map[string]any{"status": "skipped: no admin's digest is due this hour"}, nil
+	}
+	candidates = due
 	base, err := waitForHost(ctx, func() (string, error) { return p.siloBase(ctx) })
 	if err != nil {
 		return nil, err
-	}
-	week := isoWeek(now)
-	for i, r := range candidates {
-		candidates[i] = newRecipient(r.admin, alertDigest, "digest:"+week)
 	}
 
 	// Skip the Silo reads when every admin already has this week's digest.
@@ -933,5 +946,5 @@ func (p *Plugin) runDigest(ctx context.Context, now time.Time) (map[string]any, 
 	if retry > 0 || again || confirmAgain {
 		return nil, errors.New("some weekly digests couldn't be sent yet")
 	}
-	return map[string]any{"status": "ok", "week": week, "digests_sent": sent}, nil
+	return map[string]any{"status": "ok", "digests_sent": sent}, nil
 }

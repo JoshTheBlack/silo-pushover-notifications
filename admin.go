@@ -32,7 +32,114 @@ type AdminSettings struct {
 	Filters   AdminFilters             `json:"filters"`
 	Noise     NoiseSettings            `json:"noise"`
 	Limits    AdminLimits              `json:"limits"`
-	UpdatedAt time.Time                `json:"updated_at"`
+	// TimeZone is the admin's IANA time zone, as their browser reported it the
+	// last time they saved. Quiet hours and the digest's day and hour are in
+	// it. Empty means UTC.
+	TimeZone string     `json:"time_zone,omitempty"`
+	Quiet    QuietHours `json:"quiet"`
+	// Digest is when the weekly digest goes out; nil means the default,
+	// Sunday 18:00.
+	Digest *DigestSchedule `json:"digest,omitempty"`
+	// AttachPoster attaches the poster to playback alerts.
+	AttachPoster bool `json:"attach_poster"`
+	// SiloLink adds an "Open in Silo" link to playback and stream-limit
+	// alerts; nil means on.
+	SiloLink  *bool     `json:"silo_link,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// QuietHours turns alerts down between two times of day: they go out at
+// priority -1 (no sound or vibration). Start and End are "HH:MM" and the
+// period may cross midnight.
+type QuietHours struct {
+	Enabled bool   `json:"enabled"`
+	Start   string `json:"start"`
+	End     string `json:"end"`
+	// SilenceEmergency also turns emergency alerts down. Off by default:
+	// emergency alerts exist to get through.
+	SilenceEmergency bool `json:"silence_emergency"`
+}
+
+const (
+	defaultQuietStart = "22:00"
+	defaultQuietEnd   = "07:00"
+)
+
+// clockMinutes parses a "HH:MM" time of day into minutes after midnight.
+func clockMinutes(s string) (int, bool) {
+	t, err := time.Parse("15:04", s)
+	if err != nil {
+		return 0, false
+	}
+	return t.Hour()*60 + t.Minute(), true
+}
+
+// active reports whether t, already in the admin's time zone, falls in the
+// quiet period.
+func (q QuietHours) active(t time.Time) bool {
+	if !q.Enabled {
+		return false
+	}
+	start, ok1 := clockMinutes(q.Start)
+	end, ok2 := clockMinutes(q.End)
+	if !ok1 || !ok2 || start == end {
+		return false
+	}
+	m := t.Hour()*60 + t.Minute()
+	if start < end {
+		return m >= start && m < end
+	}
+	return m >= start || m < end // crosses midnight
+}
+
+// DigestSchedule is the weekday (0 = Sunday) and hour (0 to 23) an admin gets
+// the weekly digest, in their time zone.
+type DigestSchedule struct {
+	Day  int `json:"day"`
+	Hour int `json:"hour"`
+}
+
+var defaultDigestSchedule = DigestSchedule{Day: int(time.Sunday), Hour: 18}
+
+// digestSchedule is the admin's digest day and hour.
+func (s *AdminSettings) digestSchedule() DigestSchedule {
+	if s.Digest == nil {
+		return defaultDigestSchedule
+	}
+	return *s.Digest
+}
+
+// siloLink reports whether alerts link to Silo's live streams page.
+func (s *AdminSettings) siloLink() bool { return s.SiloLink == nil || *s.SiloLink }
+
+// location is the admin's time zone, UTC when unset or unknown.
+func (s *AdminSettings) location() *time.Location {
+	if s.TimeZone != "" {
+		if loc, err := time.LoadLocation(s.TimeZone); err == nil {
+			return loc
+		}
+	}
+	return time.UTC
+}
+
+// digestDue reports whether now falls in the admin's chosen digest hour.
+func (s *AdminSettings) digestDue(now time.Time) bool {
+	d := s.digestSchedule()
+	local := now.In(s.location())
+	return int(local.Weekday()) == d.Day && local.Hour() == d.Hour
+}
+
+// priorityAt is the priority an alert goes out with at the given time: quiet
+// hours bring anything louder than -1 down to -1, except an emergency alert
+// unless the admin silenced those too.
+func (s *AdminSettings) priorityAt(priority int, at time.Time) int {
+	if !s.Quiet.active(at.In(s.location())) {
+		return priority
+	}
+	if priority >= priorityEmergency && !s.Quiet.SilenceEmergency {
+		return priority
+	}
+	return min(priority, -1)
 }
 
 // AlertSettings controls one admin alert type. All are off by default.
@@ -176,6 +283,14 @@ func (s *AdminSettings) clone() *AdminSettings {
 	c.Filters.IgnoreUsers = slices.Clone(s.Filters.IgnoreUsers)
 	c.Filters.MediaTypes = slices.Clone(s.Filters.MediaTypes)
 	c.Filters.Libraries = slices.Clone(s.Filters.Libraries)
+	if s.Digest != nil {
+		d := *s.Digest
+		c.Digest = &d
+	}
+	if s.SiloLink != nil {
+		l := *s.SiloLink
+		c.SiloLink = &l
+	}
 	return &c
 }
 
@@ -185,7 +300,17 @@ type adminInput struct {
 	Filters AdminFilters             `json:"filters"`
 	Noise   NoiseSettings            `json:"noise"`
 	Limits  AdminLimits              `json:"limits"`
+	// TimeZone is the browser's IANA time zone. Empty keeps the saved one.
+	TimeZone     string          `json:"time_zone"`
+	Quiet        QuietHours      `json:"quiet"`
+	Digest       *DigestSchedule `json:"digest"`
+	AttachPoster bool            `json:"attach_poster"`
+	SiloLink     *bool           `json:"silo_link"`
 }
+
+// validAlertPriority allows Pushover's whole range for admin alerts, 2 being
+// emergency.
+func validAlertPriority(p int) bool { return p >= -2 && p <= priorityEmergency }
 
 var (
 	accountIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -208,8 +333,8 @@ func applyAdminInput(userID int, profileID, username string, in adminInput) (*Ad
 		switch {
 		case len(a.Title) > 1024 || len(a.Message) > 2048:
 			return nil, bad(t.Label + ": the template is too long.")
-		case a.Priority != nil && !validPriority(*a.Priority):
-			return nil, bad(t.Label + ": priority must be between -2 and 1.")
+		case a.Priority != nil && !validAlertPriority(*a.Priority):
+			return nil, bad(t.Label + ": priority must be between -2 and 2 (2 is emergency).")
 		case !pushoverSoundPattern.MatchString(a.Sound):
 			return nil, bad(t.Label + ": that sound name isn't valid.")
 		}
@@ -292,6 +417,48 @@ func applyAdminInput(userID int, profileID, username string, in adminInput) (*Ad
 		}
 		s.Noise.WindowMinutes = in.Noise.WindowMinutes
 	}
+
+	tz := strings.TrimSpace(in.TimeZone)
+	if tz != "" {
+		if len(tz) > 64 || tz == "Local" {
+			return nil, bad("That time zone isn't valid.")
+		}
+		if _, err := time.LoadLocation(tz); err != nil {
+			return nil, bad("That time zone isn't valid.")
+		}
+	}
+	s.TimeZone = tz
+
+	q := in.Quiet
+	q.Start, q.End = strings.TrimSpace(q.Start), strings.TrimSpace(q.End)
+	if q.Start == "" {
+		q.Start = defaultQuietStart
+	}
+	if q.End == "" {
+		q.End = defaultQuietEnd
+	}
+	start, ok1 := clockMinutes(q.Start)
+	end, ok2 := clockMinutes(q.End)
+	switch {
+	case !ok1 || !ok2:
+		return nil, bad("Quiet hours: enter the start and end as times of day.")
+	case q.Enabled && start == end:
+		return nil, bad("Quiet hours: the start and end can't be the same time.")
+	}
+	s.Quiet = q
+
+	if d := in.Digest; d != nil {
+		if d.Day < 0 || d.Day > 6 || d.Hour < 0 || d.Hour > 23 {
+			return nil, bad("Weekly digest: pick a day of the week and an hour from 0 to 23.")
+		}
+		s.Digest = &DigestSchedule{Day: d.Day, Hour: d.Hour}
+	}
+	s.AttachPoster = in.AttachPoster
+	if in.SiloLink != nil {
+		v := *in.SiloLink
+		s.SiloLink = &v
+	}
+
 	s.UpdatedAt = time.Now().UTC()
 	return s, nil
 }

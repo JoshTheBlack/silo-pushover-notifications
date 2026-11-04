@@ -1,9 +1,11 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"maps"
@@ -58,6 +60,9 @@ type fakePushover struct {
 	// hold, when set, makes messages.json wait until it is closed or the
 	// request is cancelled.
 	hold chan struct{}
+	// quotaLimit, when set, makes message answers carry the X-Limit-App-*
+	// headers (and /apps/limits.json answer) with these numbers.
+	quotaLimit, quotaRemaining, quotaReset atomic.Int64
 
 	inflight, maxInflight atomic.Int32
 }
@@ -78,6 +83,13 @@ func (f *fakePushover) handler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = io.WriteString(w, `{"status":1,"devices":["iphone","desktop"]}`)
+	case "/apps/limits.json":
+		if strings.HasPrefix(r.URL.Query().Get("token"), "bad") {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"status":0,"errors":["application token is invalid, see https://pushover.net/api"]}`)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"limit":%d,"remaining":%d,"reset":%d,"status":1}`, cmp.Or(f.quotaLimit.Load(), 10000), f.quotaRemaining.Load(), f.quotaReset.Load())
 	case "/sounds.json":
 		_, _ = io.WriteString(w, `{"status":1,"sounds":{"pushover":"Pushover (default)","mychime":"My Chime"}}`)
 	case "/messages.json":
@@ -116,6 +128,11 @@ func (f *fakePushover) handler(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.sent = append(f.sent, form)
 		f.mu.Unlock()
+		if limit := f.quotaLimit.Load(); limit > 0 {
+			w.Header().Set("X-Limit-App-Limit", strconv.FormatInt(limit, 10))
+			w.Header().Set("X-Limit-App-Remaining", strconv.FormatInt(f.quotaRemaining.Load(), 10))
+			w.Header().Set("X-Limit-App-Reset", strconv.FormatInt(f.quotaReset.Load(), 10))
+		}
 		_, _ = io.WriteString(w, `{"status":1,"request":"x"}`)
 	default:
 		http.NotFound(w, r)
@@ -319,6 +336,7 @@ func (h *harness) newPlugin(state stateBackend) *Plugin {
 	}
 	// Noise control, the tracker and the seen sets prune against the clock;
 	// pin it to the fixtures' evening so the tests don't age.
+	p.taskNow = func() time.Time { return testNow }
 	p.watch.now = func() time.Time { return testNow }
 	p.seen.now = func() time.Time { return testNow }
 	p.listLibrariesFn = func(context.Context) ([]siloLibrary, error) {
@@ -482,8 +500,7 @@ func configureWith(t *testing.T, h *harness, fields map[string]any) *syncBuffer 
 	logs := &syncBuffer{}
 	h.plugin.logger = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	value, _ := structpb.NewStruct(fields)
-	rt := &runtimeServer{plugin: h.plugin}
-	if _, err := rt.Configure(context.Background(), &pluginv1.ConfigureRequest{Config: []*pluginv1.ConfigEntry{{Key: adminConfigKey, Value: value}}}); err != nil {
+	if err := h.plugin.configure(context.Background(), []*pluginv1.ConfigEntry{{Key: adminConfigKey, Value: value}}); err != nil {
 		t.Fatal(err)
 	}
 	return logs

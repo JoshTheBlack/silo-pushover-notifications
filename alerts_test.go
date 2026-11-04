@@ -128,6 +128,9 @@ func (h *harness) optInAdmin(t *testing.T, userID int, profileID, userKey string
 	a := defaultAdminSettings()
 	a.UserID, a.ProfileID = userID, profileID
 	a.Noise.Mode = noiseEvery
+	// Due at testNow (Tuesday 20:00 UTC), so the digest tests don't depend on
+	// the default schedule.
+	a.Digest = &DigestSchedule{Day: int(testNow.Weekday()), Hour: testNow.Hour()}
 	for _, at := range adminAlertTypes {
 		s := at.defaults()
 		s.Enabled = true
@@ -654,7 +657,7 @@ func TestAdminAlertsEndpoints(t *testing.T) {
 	for name, bad := range map[string]map[string]any{
 		"noise mode": {"noise": map[string]any{"mode": "loud"}},
 		"window":     {"noise": map[string]any{"window_minutes": 5000}},
-		"priority":   {"alerts": map[string]any{alertStreamStarted: map[string]any{"priority": 2}}},
+		"priority":   {"alerts": map[string]any{alertStreamStarted: map[string]any{"priority": 3}}},
 		"user id":    {"filters": map[string]any{"ignore_users": []string{"a b"}}},
 		"media type": {"filters": map[string]any{"media_types": []string{"movie!"}}},
 		"long title": {"alerts": map[string]any{alertStreamStarted: map[string]any{"title": strings.Repeat("x", 1025)}}},

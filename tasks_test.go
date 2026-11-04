@@ -547,7 +547,7 @@ func TestWeeklyDigest(t *testing.T) {
 	h.clock(testNow)
 
 	out := h.mustRun(t, capWeeklyDigest)
-	if out["status"] != "ok" || out["digests_sent"] != float64(1) || out["week"] != "2026-W45" {
+	if out["status"] != "ok" || out["digests_sent"] != float64(1) {
 		t.Fatalf("output = %v", out)
 	}
 	msgs := h.sentTo(testUserKey)

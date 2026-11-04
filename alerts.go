@@ -46,6 +46,9 @@ type recipient struct {
 	vars    map[string]string
 	profile *ProfileSettings
 	token   string
+	// poster is the image to attach, fetched once per event; nil for none.
+	poster     []byte
+	posterType string
 }
 
 // newRecipient builds a recipient whose handled-event ID extends baseKey.
@@ -125,6 +128,7 @@ func (p *Plugin) handlePlaybackEvent(ctx context.Context, eventID, eventName str
 			r.vars = vars
 		}
 	}
+	p.attachPosters(ctx, log, recipients, pb.PosterURL)
 	if p.fanOut(ctx, log, recipients, pb.At) || retry {
 		return errors.New("some admin alerts couldn't be sent yet")
 	}
@@ -497,8 +501,12 @@ func (p *Plugin) sendAll(ctx context.Context, log *slog.Logger, recipients []*re
 // rejected for good; again means a retry could get it through.
 func (p *Plugin) sendAdminAlert(ctx context.Context, log *slog.Logger, r *recipient, at time.Time) (done, again bool) {
 	log = log.With("user_id", r.admin.UserID, "alert", r.kind)
-	msg := adminMessage(r.profile, r.admin.alert(r.kind), r.vars, at)
+	msg := p.adminPush(ctx, r.admin, r.profile, r.kind, r.vars, at)
 	msg.Token = r.token
+	msg.Priority = r.admin.priorityAt(msg.Priority, p.now())
+	if isPlaybackAlert(r.kind) && r.admin.AttachPoster {
+		msg.Attachment, msg.AttachmentType = r.poster, r.posterType
+	}
 	if err := p.pushover.Send(ctx, msg); err != nil {
 		var perr *pushoverError
 		if !errors.As(err, &perr) || perr.Retryable {
@@ -511,6 +519,52 @@ func (p *Plugin) sendAdminAlert(ctx context.Context, log *slog.Logger, r *recipi
 	log.Info("sent admin alert")
 	return true, false
 }
+
+// attachPosters downloads the event's poster once, within posterTimeout, and
+// hands it to the playback alerts whose admin switched posters on. Without a
+// poster URL, or when the download fails, the alerts go out without an image.
+func (p *Plugin) attachPosters(ctx context.Context, log *slog.Logger, recipients []*recipient, posterURL string) {
+	if posterURL == "" || !slices.ContainsFunc(recipients, func(r *recipient) bool {
+		return isPlaybackAlert(r.kind) && r.admin.AttachPoster
+	}) {
+		return
+	}
+	pctx, cancel := context.WithTimeout(ctx, p.posterTimeout)
+	defer cancel()
+	data, contentType := p.fetchPoster(pctx, posterURL)
+	if data == nil {
+		log.Info("sending admin alerts without the poster: it couldn't be downloaded in time")
+		return
+	}
+	for _, r := range recipients {
+		r.poster, r.posterType = data, contentType
+	}
+}
+
+// siloLiveStreamsPath is the page in Silo's web app that lists the streams
+// playing now, with Stop and Message buttons (web/src/App.tsx in silo-server,
+// route /admin/activity under the admin layout; it asks an admin to sign in).
+const siloLiveStreamsPath = "/admin/activity"
+
+// hasStreamLink reports whether an alert type gets an "Open in Silo" link: the
+// playback alerts and the stream-limit alerts, which are about live streams.
+func hasStreamLink(kind string) bool { return isPlaybackAlert(kind) || isLimitAlert(kind) }
+
+// adminPush is an admin alert's message for the admin's profile, with its
+// "Open in Silo" link when the admin wants one. The caller adds the token and
+// whatever depends on sending it (quiet hours, the poster).
+func (p *Plugin) adminPush(ctx context.Context, a *AdminSettings, prof *ProfileSettings, kind string, vars map[string]string, at time.Time) pushoverMessage {
+	msg := adminMessage(prof, a.alert(kind), vars, at)
+	if a.siloLink() && hasStreamLink(kind) {
+		if base := p.publicBaseURL(ctx); base != "" {
+			msg.URL, msg.URLTitle = base+siloLiveStreamsPath, "Open in Silo"
+		}
+	}
+	return msg
+}
+
+// now is the clock for quiet hours and scheduled tasks.
+func (p *Plugin) now() time.Time { return p.taskNow() }
 
 // adminMessage renders an alert for an admin's profile. The profile supplies
 // the key, device, HTML switch and default sound and priority.

@@ -720,6 +720,17 @@ func adminSettingsView(s *AdminSettings) *AdminSettings {
 	if v.Filters.Libraries == nil {
 		v.Filters.Libraries = []string{}
 	}
+	// Show what applies: the defaults for anything never set.
+	digest := s.digestSchedule()
+	v.Digest = &digest
+	link := s.siloLink()
+	v.SiloLink = &link
+	if v.Quiet.Start == "" {
+		v.Quiet.Start = defaultQuietStart
+	}
+	if v.Quiet.End == "" {
+		v.Quiet.End = defaultQuietEnd
+	}
 	return v
 }
 
@@ -744,7 +755,7 @@ func (p *Plugin) handleGetAdminAlerts(ctx context.Context, a *adminViewer) *plug
 		settings = defaultAdminSettings()
 		settings.UserID, settings.ProfileID, settings.Username = a.userID, a.profileID, a.username
 	}
-	_, ready, err := p.adminPushoverReady(ctx, a.profileID)
+	prof, ready, err := p.adminPushoverReady(ctx, a.profileID)
 	if err != nil {
 		return storeError(p, err)
 	}
@@ -769,6 +780,10 @@ func (p *Plugin) handleGetAdminAlerts(ctx context.Context, a *adminViewer) *plug
 	}
 	if !ready {
 		out["pushover_message"] = adminPushoverMissing
+	} else if prof != nil {
+		if q, ok := p.quota.get(ctx, effectiveToken(prof, p.config())); ok {
+			out["quota"] = q.view()
+		}
 	}
 	return jsonResponse(http.StatusOK, out)
 }
@@ -777,6 +792,16 @@ func (p *Plugin) handlePutAdminAlerts(ctx context.Context, a *adminViewer, body 
 	var in adminInput
 	if err := json.Unmarshal(body, &in); err != nil {
 		return errorResponse(apiErr(http.StatusBadRequest, "bad_request", "Couldn't read the settings."))
+	}
+	// A browser that doesn't report its time zone keeps the saved one.
+	if strings.TrimSpace(in.TimeZone) == "" {
+		existing, _, err := p.admins.Get(ctx, a.userID)
+		if err != nil {
+			return storeError(p, err)
+		}
+		if existing != nil {
+			in.TimeZone = existing.TimeZone
+		}
 	}
 	s, aerr := applyAdminInput(a.userID, a.profileID, a.username, in)
 	if aerr != nil {
@@ -819,9 +844,15 @@ func (p *Plugin) handleTestAdminAlert(ctx context.Context, a *adminViewer, body 
 	if !ready {
 		return errorResponse(apiErr(http.StatusUnprocessableEntity, "pushover_not_set_up", adminPushoverMissing))
 	}
-	msg := adminMessage(prof, s.alert(t.Key), t.Sample, time.Time{})
+	msg := p.adminPush(ctx, s, prof, t.Key, t.Sample, time.Time{})
 	msg.Token = effectiveToken(prof, p.config())
 	msg.Title = "[Test] " + msg.Title
+	// A test shows the wording and sound, so quiet hours don't apply, and an
+	// emergency test goes out as high priority so it doesn't repeat for an
+	// hour waiting to be acknowledged.
+	if msg.Priority == priorityEmergency {
+		msg.Priority = 1
+	}
 	if err := p.pushover.Send(ctx, msg); err != nil {
 		return errorResponse(apiErr(http.StatusBadGateway, "pushover_failed", err.Error()))
 	}

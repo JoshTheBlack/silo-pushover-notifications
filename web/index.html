@@ -49,7 +49,7 @@
     .field:last-child { margin-bottom: 0; }
     .lbl { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
     .help { color: var(--muted); font-size: 13px; margin-top: 6px; }
-    input[type="text"], input[type="password"], input[type="number"], select, textarea {
+    input[type="text"], input[type="password"], input[type="number"], input[type="time"], select, textarea {
       width: 100%; background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
       border-radius: 10px; padding: 9px 12px; font: inherit;
     }
@@ -108,6 +108,10 @@
     .narrow { max-width: 160px; }
     .limit { margin: 10px 0 0 50px; display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; font-size: 14px; }
     .limit input[type="number"] { width: 110px; }
+    .limit select, .limit input[type="time"] { width: auto; }
+    .times { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; margin: 12px 0 4px 50px; font-size: 14px; }
+    .times input[type="time"] { width: auto; }
+    @media (max-width: 640px) { .times { margin-left: 0; } }
     .limit .switch { flex-basis: 100%; margin-top: 4px; }
     @media (max-width: 640px) { .limit { margin-left: 0; } }
     .nosw { margin-left: 50px; font-size: 14px; }
@@ -163,6 +167,10 @@
     { value: 0, label: "Normal" },
     { value: 1, label: "High: bypasses quiet hours" },
   ];
+
+  // Admin alerts may also be emergencies: Pushover repeats them every minute
+  // for an hour, until acknowledged on the phone.
+  const ADMIN_PRIORITIES = [...PRIORITIES, { value: 2, label: "Emergency: repeats until you acknowledge it" }];
 
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -283,9 +291,9 @@
       `<option value="${esc(s.value)}"${s.value === selected ? " selected" : ""}>${esc(s.label)}</option>`).join("");
   }
 
-  function priorityOptions(selected, inherit, inheritLabel = "Same as default") {
+  function priorityOptions(selected, inherit, inheritLabel = "Same as default", list = PRIORITIES) {
     const first = inherit ? `<option value=""${selected == null ? " selected" : ""}>${esc(inheritLabel)}</option>` : "";
-    return first + PRIORITIES.map((p) => `<option value="${p.value}"${p.value === selected ? " selected" : ""}>${esc(p.label)}</option>`).join("");
+    return first + list.map((p) => `<option value="${p.value}"${p.value === selected ? " selected" : ""}>${esc(p.label)}</option>`).join("");
   }
 
   function deviceOptions() {
@@ -622,6 +630,10 @@
     const d = JSON.parse(JSON.stringify(settings));
     d.limits = { user_streams: 0, server_streams: 0, bandwidth_mbps: 0, bandwidth_remote_only: false, disk_pct: 0, memory_pct: 0, ...(d.limits || {}) };
     d.filters.libraries = d.filters.libraries || [];
+    d.quiet = { enabled: false, start: "22:00", end: "07:00", silence_emergency: false, ...(d.quiet || {}) };
+    d.digest = { day: 0, hour: 18, ...(d.digest || {}) };
+    d.attach_poster = !!d.attach_poster;
+    d.silo_link = d.silo_link !== false;
     return d;
   }
 
@@ -642,6 +654,31 @@
     return p ? p.name : "your profile";
   }
 
+  // The browser's time zone: quiet hours and the digest hour are in it, and it
+  // is saved with the settings.
+  function browserZone() {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) { return ""; }
+  }
+  function zoneLabel() {
+    const z = browserZone() || (adminDraft && adminDraft.time_zone) || "UTC";
+    return `${z} time, from this browser`;
+  }
+
+  // Pushover's monthly quota for the admin's application, as last seen on a
+  // send. Under 10 percent is a warning.
+  function quotaNotice() {
+    const q = adminData && adminData.quota;
+    if (!q) return "";
+    const left = `${Number(q.remaining).toLocaleString()} of ${Number(q.limit).toLocaleString()}`;
+    const refill = q.reset ? ` The count starts over on ${new Date(q.reset * 1000).toLocaleDateString()}.` : "";
+    if (q.low) {
+      return `<div class="notice warn"><strong>Your Pushover application is nearly out of messages.</strong> ${esc(left)} messages are left this month.${esc(refill)} Once they run out Pushover refuses every message from this application, for everyone who uses it, and the allowance is shared by every application on the same Pushover account. Mute noisy alerts, or give the plugin its own application token.</div>`;
+    }
+    return `<div class="help">Pushover messages left this month on your application: ${esc(left)}.${esc(refill)}</div>`;
+  }
+
+  function adminNotices() { return readyNotice() + quotaNotice(); }
+
   function readyNotice() {
     if (!adminData || adminData.pushover_ready) return "";
     return `<div class="notice warn"><strong>Set up Pushover for ${esc(activeProfileName())} first.</strong> ${esc(adminData.pushover_message || "Admin alerts are sent with your profile's Pushover settings. Add your Pushover user key in your profile's section of this page first.")}</div>`;
@@ -654,8 +691,9 @@
       const fresh = await api("api/admin/alerts");
       adminData.pushover_ready = fresh.pushover_ready;
       adminData.pushover_message = fresh.pushover_message;
+      adminData.quota = fresh.quota;
       const slot = $("#adminReady");
-      if (slot) slot.innerHTML = readyNotice();
+      if (slot) slot.innerHTML = adminNotices();
     } catch (e) {
       if (isKeyProblem(e)) showKeyOnly(e.code);
     }
@@ -668,11 +706,19 @@
       <section class="card" aria-labelledby="alertsTitle">
         <h2 id="alertsTitle">Admin alerts<span class="badge">Admin</span></h2>
         <p class="sub">Get a Pushover alert when someone plays something on your server, when streams go over the limits you set, when someone uses a new device or address, when a scan or job fails, when the server's health changes, and a weekly summary. Every alert is off until you switch it on. Alerts are sent only to you, with the Pushover settings of <strong>${esc(activeProfileName())}</strong> above; other admins set up their own. Only server admins see this section.</p>
-        <div id="adminReady">${readyNotice()}</div>
+        <div id="adminReady">${adminNotices()}</div>
         ${ALERT_GROUPS.map((g) => {
           const types = d.alert_types.filter((t) => (t.group || "playback") === g.key);
           return types.length ? `<h3>${esc(g.title)}</h3><p class="help group-sub">${esc(g.help)}</p>${g.key === "scheduled" ? scheduledSetup() : ""}<div class="alerts">${types.map(renderAlert).join("")}</div>` : "";
         }).join("")}
+
+        <h3>Playback alert extras</h3>
+        <div class="checks" style="margin:12px 0 16px">
+          <label class="switch"><input type="checkbox" id="xPoster"${dr.attach_poster ? " checked" : ""}>
+            <span><span class="t">Attach the poster</span><br><span class="d">Adds the title's poster to the playback alerts (started, paused or resumed, stopped, failed). If it can't be downloaded in a few seconds the alert goes out without it.</span></span></label>
+          <label class="switch"><input type="checkbox" id="xLink"${dr.silo_link ? " checked" : ""}>
+            <span><span class="t">Add an "Open in Silo" link</span><br><span class="d">Playback alerts and the stream-limit alerts (too many streams, bandwidth) link to Silo's Activity page, which lists the live streams and has Stop and Message buttons. You may be asked to sign in to Silo first.</span></span></label>
+        </div>
 
         <h3>Filters</h3>
         <p class="help" style="margin-top:0">Filters apply to the playback alerts. Users to ignore also applies to the alerts about one account (too many streams for one person, new device and new IP address) and leaves those people out of the weekly digest's top viewers.</p>
@@ -709,6 +755,21 @@
         </div>
         <p class="help">Playback failed alerts ignore the noise mode and always come through when they're switched on. Your filters still apply to them.</p>
 
+        <h3>Quiet hours</h3>
+        <div class="checks" style="margin:12px 0 4px">
+          <label class="switch"><input type="checkbox" id="qOn"${dr.quiet.enabled ? " checked" : ""}>
+            <span><span class="t">Turn alerts down at night</span><br><span class="d">Between the times below your admin alerts go out at low priority: no sound or vibration. They still arrive and wait in the Pushover app.</span></span></label>
+        </div>
+        <div class="times">
+          <label for="qStart">From</label><input type="time" id="qStart" value="${esc(dr.quiet.start)}">
+          <label for="qEnd">until</label><input type="time" id="qEnd" value="${esc(dr.quiet.end)}">
+          <span class="muted" id="qZone">${esc(zoneLabel())}</span>
+        </div>
+        <div class="checks" style="margin:12px 0 16px">
+          <label class="switch"><input type="checkbox" id="qSilence"${dr.quiet.silence_emergency ? " checked" : ""}>
+            <span><span class="t">Turn emergency alerts down too</span><br><span class="d">Off by default: an alert set to Emergency priority still rings during quiet hours. The time zone is read from this browser and saved with your settings.</span></span></label>
+        </div>
+
         <div class="actions">
           <button class="btn primary" type="button" id="adminSave">Save admin alerts</button>
           <button class="btn danger" type="button" id="adminRemove"${d.configured ? "" : " hidden"}>Remove my admin alerts</button>
@@ -731,6 +792,7 @@
           : `<label class="switch"><input type="checkbox" data-k="enabled"${a.enabled ? " checked" : ""}>
           <span><span class="t">${esc(t.label)}</span><br><span class="d">${esc(t.description)}${t.noise_controlled || t.group !== "playback" ? "" : " Always sent when it's on, whatever the noise mode."}</span></span></label>`}
         ${(t.limits || []).map((l) => limitRow(t, l, id)).join("")}
+        ${t.key === "digest.weekly" ? digestRow(id) : ""}
         <details>
           <summary>Customize wording</summary>
           <div class="editor">
@@ -742,7 +804,7 @@
             </div>
             <div class="grid">
               <div class="field"><label class="lbl" for="${id}_priority">Priority</label>
-                <select id="${id}_priority" data-k="priority">${priorityOptions(a.priority ?? null, true, "Same as my profile")}</select></div>
+                <select id="${id}_priority" data-k="priority">${priorityOptions(a.priority ?? null, true, "Same as my profile", ADMIN_PRIORITIES)}</select></div>
               <div class="field"><label class="lbl" for="${id}_sound">Sound</label>
                 <select id="${id}_sound" data-k="sound">${soundOptions(a.sound || "", "Same as my profile")}</select></div>
             </div>
@@ -772,7 +834,7 @@
       <p class="help">The switches below say who gets the alerts. Silo only runs the checks when you give them a schedule, and the plugin can't do that for you. Once, as the server admin:</p>
       <ol class="help">
         <li>Open <strong>Admin &gt; Plugins</strong> and open <strong>Pushover Notifications</strong>.</li>
-        <li>Under its scheduled tasks, switch on <strong>Pushover server health check</strong> and set it to run every 5 minutes, and <strong>Pushover weekly digest</strong> set to run weekly on Sunday at 18:00 (the server's time).</li>
+        <li>Under its scheduled tasks, switch on <strong>Pushover server health check</strong> and set it to run every 5 minutes, and <strong>Pushover weekly digest</strong> set to run <strong>every 1 hour</strong>, not weekly. Each admin picks their own digest day and hour below, and a run sends a digest only in that hour, so an hourly schedule is what lets every admin's choice work.</li>
         <li><strong>Restart Silo.</strong> A change to a task's schedule only takes effect after a restart, and Silo says when one is needed.</li>
       </ol>
       <p class="help">Or do it with the API, using an admin API key (replace <code>ID</code> with this plugin's installation number from Admin &gt; Plugins):</p>
@@ -780,9 +842,23 @@
 {"enabled": true, "trigger": {"type": "interval", "interval_ms": 300000}}
 
 PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
-{"enabled": true, "trigger": {"type": "weekly", "day_of_week": 0, "time_of_day": "18:00"}}</pre>
-      <p class="help">Until a task has a schedule, Silo runs it once each time it starts. Both tasks need the read-only Silo key, and each admin switches the alerts on for themselves here. A health check tells you about a problem once, then again when it's fixed.</p>
+{"enabled": true, "trigger": {"type": "interval", "interval_ms": 3600000}}</pre>
+      <p class="help">Until a task has a schedule, Silo runs it once each time it starts (a digest goes out then only if the restart falls in an admin's chosen hour, and never more than once a week). Both tasks need the read-only Silo key, and each admin switches the alerts on for themselves here. A health check tells you about a problem once, then again when it's fixed.</p>
     </details>`;
+  }
+
+  const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+  // When the weekly digest goes out: the admin's day and hour, in their time
+  // zone. The scheduled task runs hourly and sends only in that hour.
+  function digestRow(id) {
+    const d = adminDraft.digest;
+    const hours = Array.from({ length: 24 }, (_, h) => `<option value="${h}"${h === d.hour ? " selected" : ""}>${String(h).padStart(2, "0")}:00</option>`).join("");
+    return `<div class="limit"><label for="${id}_day">Send it on</label>
+      <select id="${id}_day" data-digest="day">${DAYS.map((n, i) => `<option value="${i}"${i === d.day ? " selected" : ""}>${n}</option>`).join("")}</select>
+      <label for="${id}_hour">at</label>
+      <select id="${id}_hour" data-digest="hour">${hours}</select>
+      <span class="muted">${esc(zoneLabel())}</span></div>`;
   }
 
   function limitRow(t, lim, id) {
@@ -932,6 +1008,17 @@ PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
       adminDraft.limits.bandwidth_remote_only = c.checked;
       markAdminDirty();
     }));
+    $$("#adminAlerts [data-digest]").forEach((s) => s.addEventListener("change", () => {
+      adminDraft.digest[s.dataset.digest] = Number(s.value);
+      markAdminDirty();
+    }));
+    const flag = (sel, set) => $(sel).addEventListener("change", (e) => { set(e.target.checked); markAdminDirty(); });
+    flag("#xPoster", (v) => { adminDraft.attach_poster = v; });
+    flag("#xLink", (v) => { adminDraft.silo_link = v; });
+    flag("#qOn", (v) => { adminDraft.quiet.enabled = v; });
+    flag("#qSilence", (v) => { adminDraft.quiet.silence_emergency = v; });
+    $("#qStart").addEventListener("input", (e) => { adminDraft.quiet.start = e.target.value; markAdminDirty(); });
+    $("#qEnd").addEventListener("input", (e) => { adminDraft.quiet.end = e.target.value; markAdminDirty(); });
     $$("input[name=noiseMode]").forEach((r) => r.addEventListener("change", () => {
       adminDraft.noise.mode = r.value;
       syncNoiseWindow();
@@ -946,7 +1033,11 @@ PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
   }
 
   function adminPayload() {
-    return { alerts: adminDraft.alerts, filters: adminDraft.filters, noise: adminDraft.noise, limits: adminDraft.limits };
+    return {
+      alerts: adminDraft.alerts, filters: adminDraft.filters, noise: adminDraft.noise, limits: adminDraft.limits,
+      quiet: adminDraft.quiet, digest: adminDraft.digest, attach_poster: adminDraft.attach_poster, silo_link: adminDraft.silo_link,
+      time_zone: browserZone(),
+    };
   }
 
   // Returns a message when the noise window can't be saved.
@@ -991,6 +1082,9 @@ PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
     if (problem) { adminMessage(problem, "err"); $("#noiseWindow").focus(); return; }
     const lp = limitProblem();
     if (lp) { adminMessage(lp[0], "err"); if (lp[1]) lp[1].focus(); return; }
+    const q = adminDraft.quiet;
+    if (!/^\d\d:\d\d$/.test(q.start) || !/^\d\d:\d\d$/.test(q.end)) { adminMessage("Quiet hours: enter the start and end as times of day.", "err"); $("#qStart").focus(); return; }
+    if (q.enabled && q.start === q.end) { adminMessage("Quiet hours: the start and end can't be the same time.", "err"); $("#qEnd").focus(); return; }
     btn.disabled = true;
     adminMessage("Saving…");
     try {

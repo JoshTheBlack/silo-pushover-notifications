@@ -67,6 +67,16 @@ type pushoverMessage struct {
 	AttachmentType string
 }
 
+// Emergency priority (2) repeats the alert until the user acknowledges it. The
+// plugin doesn't handle acknowledgements, so it asks Pushover for a fixed
+// cadence: every 60 s (Pushover's minimum is 30) for an hour (its maximum is
+// 10800 s).
+const (
+	priorityEmergency = 2
+	emergencyRetry    = 60 * time.Second
+	emergencyExpire   = 3600 * time.Second
+)
+
 // pushoverError is a failed Pushover API call. Retryable is false for
 // rejections that will fail again unchanged (bad key, monthly limit).
 type pushoverError struct {
@@ -91,6 +101,28 @@ type pushoverClient struct {
 	// slots limits this process to maxPushoverConns requests at a time, as
 	// Pushover asks.
 	slots chan struct{}
+	// onQuota, when set, hears the monthly quota Pushover reports on each
+	// answer that carries it, with the application token it was for.
+	onQuota func(ctx context.Context, token string, q quota)
+}
+
+// quota is an application's monthly message allowance, from the X-Limit-App-*
+// headers or the limits endpoint. Reset is a Unix time.
+type quota struct {
+	Limit, Remaining int
+	Reset            int64
+}
+
+// quotaFromHeaders reads the X-Limit-App-* headers; ok is false when they are
+// missing or unreadable.
+func quotaFromHeaders(h http.Header) (quota, bool) {
+	limit, err1 := strconv.Atoi(strings.TrimSpace(h.Get("X-Limit-App-Limit")))
+	remaining, err2 := strconv.Atoi(strings.TrimSpace(h.Get("X-Limit-App-Remaining")))
+	if err1 != nil || err2 != nil || limit <= 0 || remaining < 0 {
+		return quota{}, false
+	}
+	reset, _ := strconv.ParseInt(strings.TrimSpace(h.Get("X-Limit-App-Reset")), 10, 64)
+	return quota{Limit: limit, Remaining: remaining, Reset: reset}, true
 }
 
 const maxPushoverConns = 2
@@ -135,6 +167,10 @@ func (c *pushoverClient) Send(ctx context.Context, m pushoverMessage) error {
 	if !m.Timestamp.IsZero() {
 		fields["timestamp"] = strconv.FormatInt(m.Timestamp.Unix(), 10)
 	}
+	if m.Priority == priorityEmergency {
+		fields["retry"] = strconv.Itoa(int(emergencyRetry / time.Second))
+		fields["expire"] = strconv.Itoa(int(emergencyExpire / time.Second))
+	}
 
 	var body io.Reader
 	var contentType string
@@ -164,8 +200,26 @@ func (c *pushoverClient) Send(ctx context.Context, m pushoverMessage) error {
 		body, contentType = strings.NewReader(form.Encode()), "application/x-www-form-urlencoded"
 	}
 
-	_, err := c.call(ctx, http.MethodPost, "/messages.json", body, contentType)
+	_, _, err := c.do(ctx, http.MethodPost, "/messages.json", body, contentType, m.Token)
 	return err
+}
+
+// Limits asks Pushover for an application's monthly quota. It is free: it
+// doesn't count as a message.
+func (c *pushoverClient) Limits(ctx context.Context, token string) (quota, error) {
+	raw, _, err := c.do(ctx, http.MethodGet, "/apps/limits.json?token="+url.QueryEscape(token), nil, "", "")
+	if err != nil {
+		return quota{}, err
+	}
+	var resp struct {
+		Limit     int   `json:"limit"`
+		Remaining int   `json:"remaining"`
+		Reset     int64 `json:"reset"`
+	}
+	if json.Unmarshal(raw, &resp) != nil || resp.Limit <= 0 {
+		return quota{}, &pushoverError{Errors: []string{"Pushover's answer about the limit wasn't readable"}}
+	}
+	return quota{Limit: resp.Limit, Remaining: resp.Remaining, Reset: resp.Reset}, nil
 }
 
 // Validate checks a user key against an application token and returns the
@@ -211,9 +265,16 @@ func mergeSounds(raw []byte) []option {
 }
 
 func (c *pushoverClient) call(ctx context.Context, method, path string, body io.Reader, contentType string) ([]byte, error) {
+	raw, _, err := c.do(ctx, method, path, body, contentType, "")
+	return raw, err
+}
+
+// do makes one Pushover request. token, when given, is the application token
+// the request is for: the quota headers on the answer are credited to it.
+func (c *pushoverClient) do(ctx context.Context, method, path string, body io.Reader, contentType, token string) ([]byte, http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
@@ -221,15 +282,18 @@ func (c *pushoverClient) call(ctx context.Context, method, path string, body io.
 	select {
 	case c.slots <- struct{}{}:
 	case <-ctx.Done():
-		return nil, &pushoverError{Errors: []string{"timed out waiting to contact api.pushover.net"}, Retryable: true}
+		return nil, nil, &pushoverError{Errors: []string{"timed out waiting to contact api.pushover.net"}, Retryable: true}
 	}
 	defer func() { <-c.slots }()
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, &pushoverError{Errors: []string{"could not reach api.pushover.net"}, Retryable: true}
+		return nil, nil, &pushoverError{Errors: []string{"could not reach api.pushover.net"}, Retryable: true}
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if q, ok := quotaFromHeaders(resp.Header); ok && token != "" && c.onQuota != nil {
+		c.onQuota(ctx, token, q)
+	}
 
 	var parsed struct {
 		Status int      `json:"status"`
@@ -237,9 +301,9 @@ func (c *pushoverClient) call(ctx context.Context, method, path string, body io.
 	}
 	_ = json.Unmarshal(raw, &parsed)
 	if resp.StatusCode == http.StatusOK && parsed.Status == 1 {
-		return raw, nil
+		return raw, resp.Header, nil
 	}
-	return nil, &pushoverError{
+	return nil, resp.Header, &pushoverError{
 		HTTPStatus: resp.StatusCode,
 		Errors:     parsed.Errors,
 		// 4xx means Pushover rejected the input (or the app hit its monthly

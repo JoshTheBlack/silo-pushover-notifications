@@ -9,11 +9,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	// Embedded so time zones work on hosts without a zoneinfo database (a
+	// minimal container): quiet hours and the digest hour depend on them.
+	_ "time/tzdata"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
 	publicmanifest "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/manifest"
 	sdkruntime "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/runtime"
-	"github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/runtimedefault"
 	"github.com/Silo-Server/silo-plugin-sdk/pkg/pluginsdk/runtimehost"
 )
 
@@ -31,6 +33,7 @@ type Plugin struct {
 	watch    *watchStore  // live sessions, noise control and limit marks
 	seen     *seenStore   // known devices and addresses per account
 	health   *healthStore // the health check's result and what admins were told
+	quota    *quotaStore  // Pushover's monthly quota per application token
 	pushover *pushoverClient
 	silo     *siloClient
 	fetch    *http.Client // poster downloads
@@ -87,6 +90,9 @@ const (
 )
 
 func newPlugin(logger *slog.Logger, state stateBackend) *Plugin {
+	quota := newQuotaStore(state)
+	pushover := newPushoverClient()
+	pushover.onQuota = quota.record
 	return &Plugin{
 		logger:            logger,
 		store:             newProfileStore(state),
@@ -94,7 +100,8 @@ func newPlugin(logger *slog.Logger, state stateBackend) *Plugin {
 		watch:             newWatchStore(state),
 		seen:              newSeenStore(state),
 		health:            newHealthStore(state),
-		pushover:          newPushoverClient(),
+		quota:             quota,
+		pushover:          pushover,
 		silo:              newSiloClient(),
 		keys:              newKeyAdmin(),
 		commands:          newSessionCommander(),
@@ -197,25 +204,16 @@ func (p *Plugin) saveConfig(ctx context.Context, cfg adminConfig) error {
 	return nil
 }
 
-type runtimeServer struct {
-	runtimedefault.Server
-	manifest *pluginv1.PluginManifest
-	plugin   *Plugin
-}
-
-func (s *runtimeServer) GetManifest(context.Context, *pluginv1.GetManifestRequest) (*pluginv1.GetManifestResponse, error) {
-	return &pluginv1.GetManifestResponse{Manifest: s.manifest}, nil
-}
-
-func (s *runtimeServer) Configure(_ context.Context, req *pluginv1.ConfigureRequest) (*pluginv1.ConfigureResponse, error) {
-	cfg := parseAdminConfig(req.GetConfig())
-	s.plugin.setConfig(cfg)
-	s.plugin.configured.Store(true)
+// configure takes the saved settings Silo hands the plugin when it starts.
+func (p *Plugin) configure(_ context.Context, entries []*pluginv1.ConfigEntry) error {
+	cfg := parseAdminConfig(entries)
+	p.setConfig(cfg)
+	p.configured.Store(true)
 	if cfg.LegacyKeyStored {
 		// Only the fact, never the value.
-		s.plugin.logger.Info("the unscoped Silo API key saved by version 0.2.0 is still stored with this plugin's settings; it is ignored. Replace it from the admin section of the Pushover page, or revoke it under Admin > API Keys.")
+		p.logger.Info("the unscoped Silo API key saved by version 0.2.0 is still stored with this plugin's settings; it is ignored. Replace it from the admin section of the Pushover page, or revoke it under Admin > API Keys.")
 	}
-	return &pluginv1.ConfigureResponse{}, nil
+	return nil
 }
 
 func main() {
@@ -227,12 +225,15 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil)).With("plugin", manifest.GetPluginId())
 	plugin := newPlugin(logger, hostStateBackend{})
 
-	sdkruntime.Serve(sdkruntime.ServeConfig{
-		Servers: sdkruntime.CapabilityServers{
-			Runtime:       &runtimeServer{manifest: manifest, plugin: plugin},
-			EventConsumer: &eventServer{plugin: plugin},
-			HttpRoutes:    &routesServer{plugin: plugin},
-			ScheduledTask: &taskServer{plugin: plugin},
-		},
-	})
+	// ServeManifestWithOptions answers GetManifest and BindHostBroker itself
+	// and, because the manifest declares configuration_check, refuses to start
+	// without the ConfigurationChecks server.
+	sdkruntime.ServeManifestWithOptions(manifestJSON, "", sdkruntime.CapabilityServers{
+		EventConsumer: &eventServer{plugin: plugin},
+		HttpRoutes:    &routesServer{plugin: plugin},
+		ScheduledTask: &taskServer{plugin: plugin},
+	},
+		sdkruntime.WithConfigure(plugin.configure),
+		sdkruntime.WithConfigurationChecks(&checkServer{plugin: plugin}),
+	)
 }
