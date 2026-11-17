@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -55,28 +56,31 @@ type lifecycleEvent struct {
 
 // adminSession is the part of Silo's AdminPlaybackSession the alerts use.
 type adminSession struct {
-	SessionID             string   `json:"session_id"`
-	UserID                string   `json:"user_id"`
-	Username              string   `json:"username"`
-	ProfileID             string   `json:"profile_id"`
-	ProfileName           string   `json:"profile_name"`
-	MediaTitle            string   `json:"media_title"`
-	MediaType             string   `json:"media_type"`
-	SeriesName            string   `json:"series_name"`
-	EpisodeName           string   `json:"episode_name"`
-	SeasonNumber          *int     `json:"season_number"`
-	EpisodeNumber         *int     `json:"episode_number"`
-	ContentID             string   `json:"content_id"`
-	PosterURL             string   `json:"poster_url"`
-	DeviceID              string   `json:"device_id"`
-	DevicePlatform        string   `json:"device_platform"`
-	ClientName            string   `json:"client_name"`
-	ClientVersion         string   `json:"client_version"`
-	ClientLabel           string   `json:"client_label"`
-	ClientIP              string   `json:"client_ip"`
-	StreamLocation        string   `json:"stream_location"`
-	PlayMethod            string   `json:"play_method"`
-	EffectivePlayMethod   string   `json:"effective_play_method"`
+	SessionID           string `json:"session_id"`
+	UserID              string `json:"user_id"`
+	Username            string `json:"username"`
+	ProfileID           string `json:"profile_id"`
+	ProfileName         string `json:"profile_name"`
+	MediaTitle          string `json:"media_title"`
+	MediaType           string `json:"media_type"`
+	SeriesName          string `json:"series_name"`
+	EpisodeName         string `json:"episode_name"`
+	SeasonNumber        *int   `json:"season_number"`
+	EpisodeNumber       *int   `json:"episode_number"`
+	ContentID           string `json:"content_id"`
+	PosterURL           string `json:"poster_url"`
+	DeviceID            string `json:"device_id"`
+	DevicePlatform      string `json:"device_platform"`
+	ClientName          string `json:"client_name"`
+	ClientVersion       string `json:"client_version"`
+	ClientLabel         string `json:"client_label"`
+	ClientIP            string `json:"client_ip"`
+	StreamLocation      string `json:"stream_location"`
+	PlayMethod          string `json:"play_method"`
+	EffectivePlayMethod string `json:"effective_play_method"`
+	// AdaptationReasons say why Silo converts or repackages the file. Only
+	// GET /api/v2/admin/sessions has them; the session.* event's row doesn't.
+	AdaptationReasons     []string `json:"adaptation_reasons"`
 	VideoDecision         string   `json:"video_decision"`
 	AudioDecision         string   `json:"audio_decision"`
 	SourceVideoResolution string   `json:"source_video_resolution"`
@@ -148,6 +152,9 @@ type playback struct {
 	SourceResolution, TargetResolution string
 	BitrateKbps                        int64
 	HWAccel                            string
+	// Reasons are Silo's adaptation_reasons codes, from the admin session
+	// list (looked up on a start that isn't direct play).
+	Reasons []string
 
 	Position float64 // seconds, on start/pause/resume
 	Duration float64 // seconds, 0 when unknown
@@ -211,6 +218,9 @@ func (pb *playback) fromSession(s *adminSession) {
 		pb.Method = s.PlayMethod
 	}
 	pb.SourceResolution, pb.TargetResolution, pb.HWAccel = s.SourceVideoResolution, s.TargetResolution, s.TranscodeHWAccel
+	if len(s.AdaptationReasons) > 0 {
+		pb.Reasons = s.AdaptationReasons
+	}
 	if s.StreamBitrateKbps != nil {
 		pb.BitrateKbps = *s.StreamBitrateKbps
 	}
@@ -338,6 +348,10 @@ func (pb playback) vars() map[string]string {
 		"duration":      clock(pb.Duration),
 		"end_reason":    endReasonLabel(pb.EndReason),
 	}
+	v["transcode_reasons"] = ""
+	if pb.Method != "direct" {
+		v["transcode_reasons"] = adaptationLabels(pb.Reasons)
+	}
 	if v["user"] == "" {
 		v["user"] = "User " + pb.UserID
 	}
@@ -410,6 +424,44 @@ func mediaTypeLabel(t string) string {
 		return "Audiobook"
 	}
 	return titleCase(t)
+}
+
+// adaptationReasonLabels are the labels Silo's web admin shows for its
+// adaptation_reasons codes (Admin > Activity).
+var adaptationReasonLabels = map[string]string{
+	"video_codec_unsupported":      "Video codec not supported",
+	"video_capability_unconfirmed": "Video support unconfirmed",
+	"dynamic_range_unsupported":    "HDR not supported",
+	"resolution_limit":             "Above device resolution",
+	"bandwidth_limit":              "Connection too slow",
+	"buffering":                    "Earlier buffering",
+	"bandwidth_cap":                "Maximum bitrate setting",
+	"server_bitrate_limit":         "Access group limit",
+	"quality_selected":             "Quality chosen by viewer",
+	"subtitle_burn_in":             "Subtitles burned in",
+	"direct_play_failed":           "Direct play failed",
+	"audio_codec_unsupported":      "Audio codec not supported",
+	"audio_channels_unsupported":   "Too many audio channels",
+	"device_workaround":            "Device audio workaround",
+	"audio_track_selection":        "Audio track selection",
+	"container_unsupported":        "Container not supported",
+	"subtitle_unsupported":         "Subtitles not supported",
+}
+
+// adaptationLabels joins the reasons in Silo's order, naming a code a newer
+// Silo added from its own words.
+func adaptationLabels(codes []string) string {
+	labels := make([]string, 0, len(codes))
+	for _, c := range codes {
+		label, ok := adaptationReasonLabels[c]
+		if !ok {
+			label = titleCase(strings.ReplaceAll(c, "_", " "))
+		}
+		if label != "" && !slices.Contains(labels, label) {
+			labels = append(labels, label)
+		}
+	}
+	return strings.Join(labels, ", ")
 }
 
 func methodLabel(m string) string {

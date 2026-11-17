@@ -155,6 +155,10 @@ func (p *Plugin) lookUp(ctx context.Context, log *slog.Logger, apiKey, eventKey 
 	pb := ev.pb
 	wants := func(match func(*recipient) bool) bool { return slices.ContainsFunc(candidates, match) }
 	needCount := wants(func(r *recipient) bool { return isLimitAlert(r.kind) })
+	// Why a start isn't direct play is only on Silo's session list, not on
+	// the event. A failed lookup just leaves {transcode_reasons} empty.
+	needReasons := pb.Event == eventSessionStarted && pb.Method != "direct" && len(pb.Reasons) == 0 &&
+		wants(func(r *recipient) bool { return r.kind == alertStreamStarted })
 	needLibs := pb.ContentID != "" && wants(func(r *recipient) bool {
 		return isPlaybackAlert(r.kind) && len(r.admin.Filters.Libraries) > 0
 	})
@@ -168,10 +172,23 @@ func (p *Plugin) lookUp(ctx context.Context, log *slog.Logger, apiKey, eventKey 
 		wg.Go(func() { confirmed, roleStop, roleAgain = p.confirmAdmins(lctx, log, base, apiKey, candidates) })
 	}
 	var countErr, libsErr, seenErr error
-	if needCount {
+	if needCount || needReasons {
 		wg.Go(func() {
-			var rows []adminSession
-			if rows, countErr = p.silo.Sessions(lctx, base, apiKey); countErr == nil {
+			rows, err := p.silo.Sessions(lctx, base, apiKey)
+			if err != nil {
+				if needCount {
+					countErr = err
+				} else {
+					log.Debug("could not read why the stream isn't direct play", "error", err)
+				}
+				return
+			}
+			for _, row := range rows {
+				if row.SessionID == pb.SessionID && len(row.AdaptationReasons) > 0 {
+					pb.Reasons = row.AdaptationReasons
+				}
+			}
+			if needCount {
 				ev.live = make([]playback, 0, len(rows))
 				for _, row := range rows {
 					s := playback{SessionID: row.SessionID}

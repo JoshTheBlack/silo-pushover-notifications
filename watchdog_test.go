@@ -703,3 +703,33 @@ func TestWatchdogSettingsEndpoints(t *testing.T) {
 		t.Fatalf("test sends = %q", titles(sent))
 	}
 }
+
+// Why a start isn't direct play comes from Silo's session list (the event's
+// row doesn't carry adaptation_reasons) and is the stream-started alert's
+// last line. A direct play doesn't look it up, and a failed lookup still
+// sends the alert.
+func TestStreamStartedSaysWhyItTranscodes(t *testing.T) {
+	h := newHarness(t)
+	h.optInAdmin(t, 7, "p1", testUserKey, onlyAlerts(alertStreamStarted))
+	h.setLive(liveRow(t, "session_started", map[string]any{"adaptation_reasons": []any{"dynamic_range_unsupported", "bandwidth_limit", "something_new"}}))
+	h.mustHandle(t, sessionEvent(t, eventSessionStarted, "e1", "session_started", nil))
+	got := h.sentTo(testUserKey)
+	if len(got) != 1 || !strings.HasSuffix(got[0].Get("message"), "\nHDR not supported, Connection too slow, Something new") {
+		t.Fatalf("sent %v", got)
+	}
+
+	h2 := newHarness(t)
+	h2.optInAdmin(t, 7, "p1", testUserKey, onlyAlerts(alertStreamStarted))
+	h2.mustHandle(t, sessionEvent(t, eventSessionStarted, "e1", "session_started", withRow(map[string]any{"play_method": "direct", "effective_play_method": "direct"})))
+	if n := h2.callsTo("/api/v2/admin/sessions"); n != 0 {
+		t.Fatalf("a direct play looked up its reasons %d times", n)
+	}
+
+	h3 := newHarness(t)
+	h3.optInAdmin(t, 7, "p1", testUserKey, onlyAlerts(alertStreamStarted))
+	h3.failPath("/api/v2/admin/sessions", true)
+	h3.mustHandle(t, sessionEvent(t, eventSessionStarted, "e1", "session_started", nil))
+	if got := h3.sentTo(testUserKey); len(got) != 1 || strings.Contains(got[0].Get("message"), "not supported") {
+		t.Fatalf("with the lookup failing sent %v", got)
+	}
+}

@@ -301,7 +301,7 @@ func (t adminAlertType) defaults() AlertSettings {
 // playbackPlaceholders are filled on every playback alert.
 var playbackPlaceholders = []string{
 	"user", "profile", "user_profile", "title", "media_title", "series", "episode_title", "season", "episode", "sxe",
-	"media_type", "device", "client", "platform", "ip", "location", "method",
+	"media_type", "device", "client", "platform", "ip", "location", "method", "transcode_reasons",
 }
 
 func withPlaceholders(extra ...string) []string {
@@ -315,7 +315,8 @@ var playbackSample = map[string]string{
 	"season": "2", "episode": "1", "sxe": "S02E01", "media_type": "Episode",
 	"device": "Living Room TV", "client": "Silo for Android TV 2.4.1", "platform": "android_tv",
 	"ip": "203.0.113.24", "location": "Remote", "method": "Transcode",
-	"video": "4K → 1080p", "resolution": "4K", "bitrate": "8.0 Mbps", "hw_accel": "nvenc",
+	"transcode_reasons": "HDR not supported, Connection too slow",
+	"video":             "4K → 1080p", "resolution": "4K", "bitrate": "8.0 Mbps", "hw_accel": "nvenc",
 	"action": "paused", "position": "12:34", "duration": "57:10", "progress": "22%",
 	"watched": "42m", "finished": "not finished", "end_reason": "Silo couldn't keep playing it",
 }
@@ -338,7 +339,7 @@ var adminAlertTypes = []adminAlertType{
 		Label:           "Stream started",
 		Description:     "Someone starts playing something.",
 		DefaultTitle:    "{user_profile} started {title}",
-		DefaultMessage:  "{episode_title}\n{device} · {client}\n{location} · {method} · {video} · {bitrate}",
+		DefaultMessage:  "{episode_title}\n{device} · {client}\n{location} · {method} · {video} · {bitrate}\n{transcode_reasons}",
 		Placeholders:    withPlaceholders("video", "resolution", "bitrate", "hw_accel", "position", "progress"),
 		NoiseControlled: true,
 		Sample:          playbackSample,
