@@ -31,6 +31,7 @@ var (
 	testScopedKey    = "sa_scop0004" + strings.Repeat("d", 56)
 	testNonAdminKey  = "sa_kidk0005" + strings.Repeat("e", 56)
 	testControlOnly  = "sa_ctrl0006" + strings.Repeat("f", 56)
+	testOtherScope   = "sa_grps0008" + strings.Repeat("9", 56)
 )
 
 type fakeKey struct {
@@ -150,7 +151,7 @@ func scopeAllows(scopes []string, method, path string) bool {
 				return true
 			}
 		case scopeSessionsControl:
-			if method == http.MethodGet && path == controlProbePath {
+			if method == http.MethodGet && path == controlProbePath || method == http.MethodPost && commandPath.MatchString(path) {
 				return true
 			}
 		}
@@ -185,6 +186,9 @@ func (f *fakeKeySilo) handle(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	switch {
+	case r.Method == http.MethodPost && commandPath.MatchString(path):
+		// The setup's scope check stops a session that doesn't exist.
+		problem(w, http.StatusNotFound, "Session not found")
 	case r.Method == http.MethodGet && path == "/api/v2/admin/api-keys":
 		offset, _ := strconv.Atoi(r.URL.Query().Get("cursor"))
 		end := min(offset+f.pageSize, len(f.keys))
@@ -436,13 +440,44 @@ func TestKeySetupSavesAlreadyScopedKey(t *testing.T) {
 	if status != http.StatusOK || body["saved"] != true || body["level"] != "warn" {
 		t.Fatalf("setup: %d %v", status, body)
 	}
-	if got := ks.lastSaved(t)["monitor_api_key"]; got != testScopedKey {
-		t.Fatalf("saved monitor key = %v", got)
+	saved := ks.lastSaved(t)
+	if saved["monitor_api_key"] != testScopedKey || saved["control_api_key"] != nil && saved["control_api_key"] != "" {
+		t.Fatalf("saved %v", saved)
 	}
-	if ks.silo.count("POST") != 0 || ks.silo.count("DELETE") != 0 || ks.silo.key(testScopedKey) == nil {
+	if !strings.Contains(details(body), "no admin:sessions:control") {
+		t.Fatalf("asked for stream control without saying the key can't: %v", body)
+	}
+	if ks.silo.count("POST /api/v2/admin/api-keys") != 0 || ks.silo.count("DELETE") != 0 || ks.silo.key(testScopedKey) == nil {
 		t.Fatalf("an already scoped key must not create or revoke anything: %v", ks.silo.events())
 	}
 	ks.assertNoLeaks(t, body)
+}
+
+// Silo's Admin > API Keys page makes scoped keys now. A pasted one is saved
+// for each plugin scope it has; admin:sessions:control is told apart from
+// admin:monitor:read by asking Silo to stop a session that doesn't exist.
+func TestKeySetupSavesScopedKeysByScope(t *testing.T) {
+	ks := newKeySetupHarness(t, nil)
+	ks.silo.add(7, "Stop streams", testControlOnly, scopeSessionsControl)
+	status, body := ks.setup(t, asPrimary, map[string]any{"key": testControlOnly, "revoke": true})
+	saved := ks.lastSaved(t)
+	if status != http.StatusOK || body["saved"] != false || body["level"] != "warn" || saved["control_api_key"] != testControlOnly ||
+		saved["monitor_api_key"] != nil && saved["monitor_api_key"] != "" {
+		t.Fatalf("control-only key: %d %v saved %v", status, body, saved)
+	}
+	if ks.silo.count("POST /api/v2/admin/api-keys") != 0 || ks.silo.count("DELETE") != 0 {
+		t.Fatalf("created or revoked: %v", ks.silo.events())
+	}
+
+	both := "sa_both0009" + strings.Repeat("b", 56)
+	ks2 := newKeySetupHarness(t, nil)
+	ks2.silo.add(7, "Pushover", both, scopeMonitorRead, scopeSessionsControl)
+	status, body = ks2.setup(t, asPrimary, map[string]any{"key": both})
+	saved = ks2.lastSaved(t)
+	if status != http.StatusOK || body["saved"] != true || saved["monitor_api_key"] != both || saved["control_api_key"] != both {
+		t.Fatalf("two-scope key: %d %v saved %v", status, body, saved)
+	}
+	ks2.assertNoLeaks(t, body)
 }
 
 func TestKeySetupRejectsUnusableKeys(t *testing.T) {
@@ -455,13 +490,13 @@ func TestKeySetupRejectsUnusableKeys(t *testing.T) {
 		{"blank", "  ", "invalid", http.StatusUnprocessableEntity, false},
 		{"unknown or revoked", "sa_gone0007" + strings.Repeat("0", 56), "key_rejected", http.StatusUnprocessableEntity, true},
 		{"non-admin account", testNonAdminKey, "key_not_full_access", http.StatusUnprocessableEntity, true},
-		{"other scope", testControlOnly, "key_not_full_access", http.StatusUnprocessableEntity, true},
+		{"other scope", testOtherScope, "key_not_full_access", http.StatusUnprocessableEntity, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			ks := newKeySetupHarness(t, nil)
 			ks.silo.add(8, "Kid's key", testNonAdminKey)
-			ks.silo.add(7, "Stop streams", testControlOnly, scopeSessionsControl)
+			ks.silo.add(7, "Access groups", testOtherScope, "admin:access-groups:read")
 			status, body := ks.setup(t, asPrimary, map[string]any{"key": c.key, "revoke": true})
 			if status != c.status || body["code"] != c.code {
 				t.Fatalf("setup: %d %v, want %d %s", status, body, c.status, c.code)
@@ -469,7 +504,10 @@ func TestKeySetupRejectsUnusableKeys(t *testing.T) {
 			if (len(ks.silo.events()) > 0) != c.callsSilo {
 				t.Fatalf("Silo calls: %v", ks.silo.events())
 			}
-			if ks.silo.count("POST") != 0 || ks.silo.count("DELETE") != 0 || ks.silo.count("SAVE") != 0 {
+			// The stream-control scope check stops a session that doesn't
+			// exist, so that POST changes nothing.
+			probes := ks.silo.count("POST /api/v2/admin/sessions/pushover-scope-check-")
+			if ks.silo.count("POST") != probes || ks.silo.count("DELETE") != 0 || ks.silo.count("SAVE") != 0 {
 				t.Fatalf("a refused key changed something: %v", ks.silo.events())
 			}
 			if ks.plugin.config().MonitorAPIKey != "" {

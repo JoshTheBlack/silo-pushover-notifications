@@ -34,7 +34,7 @@ The plugin's setup steps are shown on its Admin > Plugins page in Silo. In short
 
 1. Optionally paste a shared Pushover application token into the plugin's settings.
 2. Each profile opens **Apps > Pushover** and adds their Pushover user key.
-3. Admins who want admin alerts paste a full-access Silo API key into the **Silo API keys** tab. The plugin uses it once to create a read-only key, then revokes it.
+3. Admins who want admin alerts create a scoped key under **Admin > API Keys** with `admin:monitor:read` (and `admin:sessions:control` to stop streams) and paste it into the **Silo API keys** tab. A full-access key works too: the plugin uses it once to create the scoped keys, then revokes it.
 
 ## API
 

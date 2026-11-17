@@ -1314,10 +1314,10 @@ PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
         <div class="actions"><button class="btn primary" type="button" id="legacyBtn">Replace the old full-access key</button></div></div>` : ""}
       <section class="card">
         <h2>${action}</h2>
-        <span class="help">Paste a full-access key from Admin &gt; API Keys. The plugin makes scoped keys from it and never stores it.</span>
-        <div class="field"><label class="lbl" for="setupKey">Full-access key</label><input type="password" id="setupKey" autocomplete="off" spellcheck="false" placeholder="sa_…"></div>
+        <span class="help">Paste a key from Admin &gt; API Keys. A scoped key (admin:monitor:read, plus admin:sessions:control to stop streams) is saved as it is. A full-access key is used once to make the scoped keys and is never stored.</span>
+        <div class="field"><label class="lbl" for="setupKey">Silo API key</label><input type="password" id="setupKey" autocomplete="off" spellcheck="false" placeholder="sa_…"></div>
         <div class="flexrow">
-          <label class="sw"><input type="checkbox" id="setupRevoke"${keepRevoke ? " checked" : ""}>Delete this key from Silo afterwards</label>
+          <label class="sw"><input type="checkbox" id="setupRevoke"${keepRevoke ? " checked" : ""}>Full-access key: delete it from Silo afterwards</label>
           <label class="sw"><input type="checkbox" id="setupControl"${keepControl ? " checked" : ""}>Also allow stopping streams</label>
         </div>
         <div class="actions"><button class="btn primary" type="button" id="setupBtn">${action}</button></div>
@@ -1337,7 +1337,7 @@ PUT /api/v2/admin/plugins/installations/ID/task-bindings/weekly_digest
     const body = { source, control: $("#setupControl").checked };
     const pasted = $("#setupKey").value.trim();
     if (source === "paste") {
-      if (!pasted) { showSetupResult("error", "Paste a full-access Silo API key first.", []); $("#setupKey").focus(); return; }
+      if (!pasted) { showSetupResult("error", "Paste a Silo API key first.", []); $("#setupKey").focus(); return; }
       body.key = pasted;
       body.revoke = $("#setupRevoke").checked;
     } else if (!confirm("Use the old full-access key to create the read-only key, then revoke the old key in Silo?")) {

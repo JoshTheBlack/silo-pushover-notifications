@@ -17,10 +17,12 @@ import (
 )
 
 // Key setup lets an acting admin give the plugin its scoped Silo keys from
-// the Pushover page. Silo's Admin > API Keys page only makes full-access
-// keys, so the admin pastes one, the plugin uses it to create a key with only
-// admin:monitor:read (and optionally admin:sessions:control), and can then
-// revoke the pasted key.
+// the Pushover page. The admin pastes either a scoped key made under Silo's
+// Admin > API Keys (saved as is, for each of admin:monitor:read and
+// admin:sessions:control it has), or a full-access key, which the plugin uses
+// to create a key with only admin:monitor:read (and optionally
+// admin:sessions:control), and can then revoke. Silo's page could only make
+// full-access keys until late 2026.
 //
 // The steps run in the order create → verify → save → revoke, so a failure
 // never leaves the plugin without a working key. The pasted key and the keys
@@ -127,7 +129,7 @@ func (p *Plugin) handleKeySetup(ctx context.Context, req *pluginv1.HandleHTTPReq
 		key := strings.TrimSpace(in.Key)
 		switch {
 		case key == "":
-			return errorResponse(apiErr(http.StatusUnprocessableEntity, "invalid", "Paste a full-access Silo API key first."))
+			return errorResponse(apiErr(http.StatusUnprocessableEntity, "invalid", "Paste a Silo API key first."))
 		case !siloKeyPattern.MatchString(key):
 			return errorResponse(apiErr(http.StatusUnprocessableEntity, "invalid", "That doesn't look like a Silo API key. Silo keys start with sa_ and are shown once, when the key is created."))
 		}
@@ -184,9 +186,13 @@ func (s *keySetup) run(ctx context.Context) (*keySetupResult, *apiError) {
 	}
 
 	matches := matchingKeys(keys, s.key)
-	if len(matches) == 1 && slices.Contains(matches[0].Scopes, scopeMonitorRead) {
+	if len(matches) == 1 && len(matches[0].Scopes) > 0 {
 		// Today's Silo never gets here (a scoped key can't list keys).
-		return s.saveExistingKey(ctx)
+		monitor := slices.Contains(matches[0].Scopes, scopeMonitorRead)
+		control := slices.Contains(matches[0].Scopes, scopeSessionsControl)
+		if monitor || control {
+			return s.saveExistingKey(ctx, monitor, control)
+		}
 	}
 	return s.createKeys(ctx, matches)
 }
@@ -203,29 +209,42 @@ func matchingKeys(keys []siloAPIKey, key string) []siloAPIKey {
 	return out
 }
 
-// useScopedKey handles a key Silo won't let list keys: saved as is if it
-// already has admin:monitor:read, refused otherwise.
+// useScopedKey handles a key Silo won't let list keys, such as a scoped key
+// made under Admin > API Keys: saved as is for each plugin scope it has,
+// refused when it has neither.
 func (s *keySetup) useScopedKey(ctx context.Context) (*keySetupResult, *apiError) {
-	ok, err := s.works(ctx, s.key, monitorProbePaths(s.userID)...)
+	monitor, err := s.works(ctx, s.key, monitorProbePaths(s.userID)...)
 	if err != nil {
 		return nil, s.siloFailed("check the key with Silo", err)
 	}
-	if !ok {
-		msg := "This key can't create API keys. Paste a full-access key made on an admin account under " + apiKeysPage + "."
+	control := false
+	if !s.legacy {
+		if control, err = s.canControl(ctx, s.key); err != nil {
+			return nil, s.siloFailed("check the key with Silo", err)
+		}
+	}
+	if !monitor && !control {
+		msg := "This key has neither scope the plugin uses (admin:monitor:read or admin:sessions:control) and can't create keys. Under " + apiKeysPage +
+			", make a scoped key with admin:monitor:read, or paste a full-access key from an admin account."
 		if s.legacy {
-			msg = "The full-access key saved by version 0.2.0 can't create API keys any more (its account may no longer be an admin). Paste a full-access key made on an admin account instead."
+			msg = "The full-access key saved by version 0.2.0 can't create API keys any more (its account may no longer be an admin). Paste a key made under " + apiKeysPage + " instead."
 		}
 		return nil, apiErr(http.StatusUnprocessableEntity, "key_not_full_access", msg)
 	}
-	return s.saveExistingKey(ctx)
+	return s.saveExistingKey(ctx, monitor, control)
 }
 
-// saveExistingKey saves a key that already has admin:monitor:read. Nothing
-// is created or revoked.
-func (s *keySetup) saveExistingKey(ctx context.Context) (*keySetupResult, *apiError) {
+// saveExistingKey saves a scoped key as the read-only key, the stream-control
+// key, or both, by the scopes it has. Nothing is created or revoked.
+func (s *keySetup) saveExistingKey(ctx context.Context, monitor, control bool) (*keySetupResult, *apiError) {
 	prev := s.p.config()
 	next := prev.withoutLegacyKey()
-	next.MonitorAPIKey = s.key
+	if monitor {
+		next.MonitorAPIKey = s.key
+	}
+	if control {
+		next.ControlAPIKey = s.key
+	}
 	if err := s.p.saveConfig(ctx, next); err != nil {
 		s.logFailure("save", err)
 		return nil, apiErr(http.StatusInternalServerError, "save_failed", "Couldn't save the key in the plugin's settings, so nothing was changed. Try again.")
@@ -234,13 +253,26 @@ func (s *keySetup) saveExistingKey(ctx context.Context) (*keySetupResult, *apiEr
 	if s.legacy {
 		what = "The key saved by version 0.2.0"
 	}
-	s.note(false, what+" already has the admin:monitor:read scope, so it's now saved as the plugin's read-only key. Nothing was created or revoked.")
-	if s.control {
-		s.note(true, "A scoped key can't create other keys, so no stream-control key was made. To add one, paste a full-access key.")
+	title := "Read-only key saved."
+	switch {
+	case monitor && control:
+		s.note(false, what+" has admin:monitor:read and admin:sessions:control, so it's now saved as both the read-only and the stream-control key. Nothing was created or revoked.")
+		title = "Read-only and stream-control key saved."
+	case monitor:
+		s.note(false, what+" has the admin:monitor:read scope, so it's now saved as the plugin's read-only key. Nothing was created or revoked.")
+		if s.control {
+			s.note(true, "This key has no admin:sessions:control scope, so stopping streams isn't set up. Make a key with that scope under "+apiKeysPage+" and paste it here too.")
+		}
+	default:
+		s.note(false, what+" has the admin:sessions:control scope, so it's now saved as the plugin's stream-control key. Nothing was created or revoked.")
+		title = "Stream-control key saved."
+		if next.MonitorAPIKey == "" {
+			s.note(true, "No read-only key is saved yet, so admin alerts and the Live streams list stay off. Make a key with admin:monitor:read under "+apiKeysPage+" and paste it here too.")
+		}
 	}
 	s.noteReplaced(prev, next)
-	s.p.logger.Info("read-only Silo key saved from the plugin page", "user_id", s.userID, "created", false)
-	return s.result(true, "Read-only key saved."), nil
+	s.p.logger.Info("scoped Silo key saved from the plugin page", "user_id", s.userID, "created", false, "monitor", monitor, "control", control)
+	return s.result(monitor || next.MonitorAPIKey != "", title), nil
 }
 
 // createKeys makes the scoped key(s), checks and saves them, then revokes
@@ -416,6 +448,28 @@ func (s *keySetup) works(ctx context.Context, key string, paths ...string) (bool
 		}
 	}
 	return true, nil
+}
+
+// canControl reports whether a key has admin:sessions:control. Every GET that
+// scope allows is also allowed to admin:monitor:read, so it asks Silo to stop
+// a session that doesn't exist: Silo checks the scope first (403 without it)
+// and then answers that there is no such session. Nothing is stopped.
+func (s *keySetup) canControl(ctx context.Context, key string) (bool, error) {
+	probe := "pushover-scope-check-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	_, err := s.p.commands.send(ctx, s.base, key, probe, "stop", nil)
+	var serr *siloStatusError
+	switch {
+	case err == nil, errors.Is(err, errSessionEnded):
+		return true, nil
+	case errors.Is(err, errControlKeyRejected), errors.Is(err, errControlKeyScope):
+		return false, nil
+	case errors.As(err, &serr) && serr.Status < http.StatusInternalServerError:
+		// Past the scope check: the request itself was refused.
+		return true, nil
+	case errors.Is(err, errCommandsUnavailable), errors.Is(err, errNoRealtime):
+		return true, nil
+	}
+	return false, err
 }
 
 // discard revokes keys this run created and returns the labels of any that
