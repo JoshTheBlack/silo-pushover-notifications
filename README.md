@@ -68,9 +68,9 @@ After a release, bump `version` in `manifest.json` on the dev branch (for exampl
 ### Stable releases
 
 1. Merge the dev branch into `main`. `manifest.json` holds the version being released, such as `0.4.0`.
-2. On GitHub, open **Actions > Release > Run workflow** and run it on `main`. (Pushing a `v0.4.0` tag does the same.)
-3. The workflow tests, builds and creates a **draft** release `v0.4.0` with the binaries, zips and `catalog.json`.
-4. Check the draft and publish it. Publishing creates the tag, and the release becomes the latest one, which the stable catalog URL points to.
+2. On GitHub, open **Actions > Release > Run workflow** and run it on `main`. That run tags `main` as `v0.4.0` and starts a second Release run on the tag. (Pushing a `v0.4.0` tag does the same.)
+3. The run on the tag tests, builds and signs the binaries (a GitHub build attestation, `plugin.sigstore.json`), and creates a **draft** release with the binaries, zips and `catalog.json`. Silo checks the signature and shows it as verified under Admin > Plugins.
+4. Check the draft and publish it. It becomes the latest release, which the stable catalog URL points to.
 
 Silo checks plugin catalogs when it starts and then once a day (the **Check Plugin Updates** scheduled task). Run that task to pick up a release sooner.
 

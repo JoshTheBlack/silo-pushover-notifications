@@ -1,13 +1,17 @@
-# Builds a stable release for manifest.json's version (tag v<version>).
+# Builds and signs a stable release for manifest.json's version (tag v<version>).
 #
 # Start it either way:
-#   - Actions > Release > Run workflow, on main. Creates a draft release; the
-#     tag is created when the draft is published.
+#   - Actions > Release > Run workflow, on main. This run creates the tag on
+#     main's commit and starts the release again on that tag, which builds it.
 #   - Push a tag v<version>, or publish a release with a new tag on GitHub.
-#     Creates a draft, or attaches the files to the release that already exists.
 #
-# A release that already has catalog.json is left alone, so the run started by
-# publishing the draft (which creates the tag) does nothing.
+# The build runs on the tag because Silo checks each release's Sigstore bundle
+# (plugin.sigstore.json, from actions/attest-build-provenance) against the
+# catalog's repo_url and the ref refs/tags/v<version>. A build from main would
+# record "invalid" in Admin > Plugins.
+#
+# It creates a draft release, or attaches the files to a release that exists
+# without them. A release that already has catalog.json is left alone.
 #
 # Publishing makes it the "latest" release, which Silo's stable catalog URL
 # points at, so servers only see it once it's published:
@@ -22,6 +26,9 @@ on:
 
 permissions:
   contents: write
+  actions: write
+  id-token: write
+  attestations: write
 
 concurrency:
   group: release
@@ -45,15 +52,25 @@ jobs:
             echo "::error::manifest.json version $version isn't a plain release version like 1.2.3"
             exit 1
           fi
-          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_NAME" != "$tag" ]; then
-            echo "::error::tag $GITHUB_REF_NAME doesn't match manifest.json version $version"
-            exit 1
-          fi
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ]; then
-            echo "::error::run the release on main, not $GITHUB_REF_NAME"
-            exit 1
-          fi
+          case "$GITHUB_REF" in
+            refs/heads/main)
+              if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then
+                echo "::error::unexpected run on main"
+                exit 1
+              fi
+              mode=tag ;;
+            refs/tags/*)
+              if [ "$GITHUB_REF_NAME" != "$tag" ]; then
+                echo "::error::tag $GITHUB_REF_NAME doesn't match manifest.json version $version"
+                exit 1
+              fi
+              mode=build ;;
+            *)
+              echo "::error::run the release on main, not $GITHUB_REF_NAME"
+              exit 1 ;;
+          esac
           tagged="$(git ls-remote --tags origin | grep -E "refs/tags/$tag(\^\{\})?\$" | cut -f1)"
+          echo "tagged=$tagged" >> "$GITHUB_OUTPUT"
           if [ -n "$tagged" ] && ! echo "$tagged" | grep -qx "$GITHUB_SHA"; then
             echo "::error::$tag already points at another commit"
             exit 1
@@ -61,38 +78,74 @@ jobs:
           if assets="$(gh release view "$tag" --json assets -q '.assets[].name' 2>/dev/null)"; then
             if echo "$assets" | grep -qx catalog.json; then
               echo "$tag already has its files; nothing to do."
-              echo "mode=skip" >> "$GITHUB_OUTPUT"
-            else
-              echo "mode=upload" >> "$GITHUB_OUTPUT"
+              mode=skip
+            elif [ "$mode" = build ]; then
+              mode=upload
             fi
-          else
-            echo "mode=create" >> "$GITHUB_OUTPUT"
+          elif [ "$mode" = build ]; then
+            mode=create
           fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+      # A tag made with the workflow's token doesn't start a push run, so this
+      # run starts the release on the tag itself.
+      - name: Tag main and start the release on the tag
+        if: steps.check.outputs.mode == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.check.outputs.tag }}
+          TAGGED: ${{ steps.check.outputs.tagged }}
+        run: |
+          if [ -z "$TAGGED" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" > /dev/null
+            echo "Created $TAG on $GITHUB_SHA."
+          fi
+          gh workflow run release.yml --ref "$TAG"
+          echo "Started the release on $TAG. Follow it under Actions > Release."
 
       - uses: actions/setup-go@v5
-        if: steps.check.outputs.mode != 'skip'
+        if: steps.check.outputs.mode == 'create' || steps.check.outputs.mode == 'upload'
         with:
           go-version-file: go.mod
 
       - name: Test
-        if: steps.check.outputs.mode != 'skip'
+        if: steps.check.outputs.mode == 'create' || steps.check.outputs.mode == 'upload'
         run: |
           test -z "$(gofmt -l .)" || { gofmt -l .; echo "::error::run gofmt"; exit 1; }
           go vet ./...
           go test ./...
 
       - name: Build
-        if: steps.check.outputs.mode != 'skip'
+        if: steps.check.outputs.mode == 'create' || steps.check.outputs.mode == 'upload'
         run: >
-          go run ./scripts/package -out dist
+          go run ./scripts/package -out dist -signed
           -release-url "https://github.com/$GITHUB_REPOSITORY/releases/download/${{ steps.check.outputs.tag }}"
           -repo-url "https://github.com/$GITHUB_REPOSITORY"
 
       - name: Check a binary reports its manifest
-        if: steps.check.outputs.mode != 'skip'
+        if: steps.check.outputs.mode == 'create' || steps.check.outputs.mode == 'upload'
         run: |
           chmod +x dist/release/plugin-linux-amd64
           dist/release/plugin-linux-amd64 manifest | jq -e --arg v "$(jq -r .version manifest.json)" '.version == $v'
+
+      - name: Sign the binaries
+        id: attest
+        if: steps.check.outputs.mode == 'create' || steps.check.outputs.mode == 'upload'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/release/plugin-*
+
+      - name: Check the signature
+        if: steps.check.outputs.mode == 'create' || steps.check.outputs.mode == 'upload'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          cp "$BUNDLE" dist/release/plugin.sigstore.json
+          for bin in dist/release/plugin-*; do
+            gh attestation verify "$bin" --bundle dist/release/plugin.sigstore.json \
+              --repo "$GITHUB_REPOSITORY" --source-ref "$GITHUB_REF"
+          done
 
       - name: Create the draft release
         if: steps.check.outputs.mode == 'create'
@@ -100,10 +153,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.check.outputs.tag }}
         run: >
-          gh release create "$TAG" --draft --target "$GITHUB_SHA"
+          gh release create "$TAG" --draft --verify-tag
           --title "$TAG" --generate-notes
           dist/release/catalog.json dist/release/checksums.txt dist/release/plugin-*
-          dist/*.zip dist/SHA256SUMS.txt
+          dist/release/plugin.sigstore.json dist/*.zip dist/SHA256SUMS.txt
 
       - name: Attach the files to the existing release
         if: steps.check.outputs.mode == 'upload'
@@ -113,4 +166,4 @@ jobs:
         run: >
           gh release upload "$TAG" --clobber
           dist/release/catalog.json dist/release/checksums.txt dist/release/plugin-*
-          dist/*.zip dist/SHA256SUMS.txt
+          dist/release/plugin.sigstore.json dist/*.zip dist/SHA256SUMS.txt

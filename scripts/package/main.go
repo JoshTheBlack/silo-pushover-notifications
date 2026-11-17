@@ -52,6 +52,7 @@ func main() {
 	repoURL := flag.String("repo-url", "https://github.com/joshtheblack/silo-pushover-notifications", "source repository listed in the catalog")
 	version := flag.String("version", "", "build as this version instead of manifest.json's; must be manifest.json's version plus a pre-release, e.g. 0.4.0-dev.12")
 	mergeCatalog := flag.String("merge-catalog", "", "catalog.json whose entries for this plugin are copied into ours (other versions only); a missing file is skipped")
+	signed := flag.Bool("signed", false, "list the release's Sigstore bundle ("+bundleName+") as the catalog entry's bundle_url; the release workflow makes it")
 	flag.Parse()
 	if *verify != "" {
 		base := strings.TrimSuffix(filepath.Base(*verify), ".zip")
@@ -68,13 +69,17 @@ func main() {
 		fmt.Println("ok", *verify)
 		return
 	}
-	if err := run(*out, *targets, *manifestPath, *pkg, *releaseURL, *repoURL, *version, *mergeCatalog); err != nil {
+	bundleURL := ""
+	if *signed {
+		bundleURL = strings.TrimRight(*releaseURL, "/") + "/" + bundleName
+	}
+	if err := run(*out, *targets, *manifestPath, *pkg, *releaseURL, *repoURL, *version, *mergeCatalog, bundleURL); err != nil {
 		fmt.Fprintln(os.Stderr, "package:", err)
 		os.Exit(1)
 	}
 }
 
-func run(out, targets, manifestPath, pkg, releaseURL, repoURL, version, mergeCatalog string) error {
+func run(out, targets, manifestPath, pkg, releaseURL, repoURL, version, mergeCatalog, bundleURL string) error {
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return err
@@ -149,7 +154,7 @@ func run(out, targets, manifestPath, pkg, releaseURL, repoURL, version, mergeCat
 			return err
 		}
 	}
-	return writeRelease(filepath.Join(out, "release"), strings.TrimRight(releaseURL, "/"), repoURL, raw, release, extra)
+	return writeRelease(filepath.Join(out, "release"), strings.TrimRight(releaseURL, "/"), repoURL, bundleURL, raw, release, extra)
 }
 
 // devVersion is a semver version with a pre-release, such as 0.4.0-dev.12.
@@ -205,8 +210,16 @@ type catalogPackage struct {
 	Manifest     *pluginv1.PluginManifest `json:"manifest"`
 	RepoURL      string                   `json:"repo_url,omitempty"`
 	ChecksumsURL string                   `json:"checksums_url,omitempty"`
-	Binaries     map[string]catalogBinary `json:"binaries"`
+	// BundleURL is the release's Sigstore bundle. Silo checks it against
+	// repo_url and the tag v<version>, records the result and shows it in
+	// Admin > Plugins; for a third-party plugin it never refuses an install.
+	BundleURL string                   `json:"bundle_url,omitempty"`
+	Binaries  map[string]catalogBinary `json:"binaries"`
 }
+
+// bundleName is the release asset holding the build attestation, as Silo's
+// plugin trust docs name it.
+const bundleName = "plugin.sigstore.json"
 
 type catalogBinary struct {
 	URL      string `json:"url"`
@@ -218,7 +231,7 @@ type catalogBinary struct {
 // the manifest is encoded the same way (enums as numbers, as Silo's own
 // catalog has them). The catalog is decoded again and compared with the
 // manifest to prove Silo will read back what manifest.json says.
-func writeRelease(dir, releaseURL, repoURL string, manifestJSON []byte, bins map[string][]byte, extra []catalogPackage) error {
+func writeRelease(dir, releaseURL, repoURL, bundleURL string, manifestJSON []byte, bins map[string][]byte, extra []catalogPackage) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -238,6 +251,7 @@ func writeRelease(dir, releaseURL, repoURL string, manifestJSON []byte, bins map
 		Manifest:     m,
 		RepoURL:      repoURL,
 		ChecksumsURL: releaseURL + "/checksums.txt",
+		BundleURL:    bundleURL,
 		Binaries:     map[string]catalogBinary{},
 	}
 	var sums []string

@@ -17,6 +17,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 concurrency:
   group: dev-build
@@ -67,6 +69,20 @@ jobs:
           chmod +x dist/release/plugin-linux-amd64
           dist/release/plugin-linux-amd64 manifest | jq -e --arg v "${{ steps.version.outputs.version }}" '.version == $v'
 
+      # Signed like a release, but the dev catalog doesn't list the bundle:
+      # Silo wants refs/tags/v<version>, and a dev build comes from a branch,
+      # so it would show the build as "invalid" rather than unsigned.
+      - name: Sign the binaries
+        id: attest
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/release/plugin-*
+
+      - name: Keep the signature with the release
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE" dist/release/plugin.sigstore.json
+
       - name: Publish the dev-build pre-release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -77,4 +93,4 @@ jobs:
             --title "Dev build $VERSION" \
             --notes "Built from \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}. For testing; not for general use. Silo catalog: https://github.com/$GITHUB_REPOSITORY/releases/download/dev-build/catalog.json" \
             dist/release/catalog.json dist/release/checksums.txt dist/release/plugin-* \
-            dist/*.zip dist/SHA256SUMS.txt
+            dist/release/plugin.sigstore.json dist/*.zip dist/SHA256SUMS.txt
