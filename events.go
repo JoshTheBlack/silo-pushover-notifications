@@ -38,8 +38,9 @@ type delivery struct {
 	CreatedAt     time.Time       `json:"created_at"`
 }
 
-// deliveryFlags decodes reason_flags: the four reason booleans on
-// episode.available, request identifiers on request.* deliveries.
+// deliveryFlags decodes reason_flags: the reason booleans on
+// episode.available (next_up alone on current Silo), request identifiers on
+// request.* deliveries, and media_type on watchlist.available.
 type deliveryFlags struct {
 	Favorite         bool   `json:"favorite"`
 	Watchlist        bool   `json:"watchlist"`
@@ -150,15 +151,6 @@ func (p *Plugin) deliver(ctx context.Context, key string, d delivery) error {
 	if !ts.Enabled {
 		return nil
 	}
-	if typeKey == episodeAvailableKey {
-		var flags deliveryFlags
-		_ = json.Unmarshal(d.ReasonFlags, &flags)
-		if !settings.wantsEpisode(flags) {
-			log.Debug("episode skipped: none of its reasons is one the profile asked for")
-			return nil
-		}
-	}
-
 	handled, err := p.handled.Seen(ctx, key)
 	if err != nil {
 		log.Warn("could not read handled events; asking Silo to retry", "error", err)

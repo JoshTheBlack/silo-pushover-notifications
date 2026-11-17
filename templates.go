@@ -50,14 +50,14 @@ var notificationTypes = []notificationType{
 	{
 		Key:            "episode.available",
 		Label:          "New episode available",
-		Description:    "A new episode of a show you favorited, watchlisted or are watching was added.",
+		Description:    "A new episode became your Next Up for a show you're watching.",
 		DefaultTitle:   "New episode: {series}",
 		DefaultMessage: "{sxe} · {episode_title}",
 		DefaultEnabled: true,
 		Placeholders:   append([]string{"series", "episode_title", "season", "episode", "sxe", "reasons"}, commonPlaceholders...),
 		Sample: map[string]string{
 			"series": "Severance", "episode_title": "Hello, Ms. Cobel", "season": "2", "episode": "1",
-			"sxe": "S02E01", "reasons": "Watchlist, Next Up",
+			"sxe": "S02E01", "reasons": "Next Up",
 		},
 		DefaultGroupTitle:   "{series}: {count} new episodes ({range})",
 		DefaultGroupMessage: "{episodes}",
@@ -65,7 +65,7 @@ var notificationTypes = []notificationType{
 		GroupSample: map[string]string{
 			"series": "Severance", "count": "3", "range": "S02E01 to S02E03", "first": "S02E01", "last": "S02E03",
 			"episodes": "S02E01 · Hello, Ms. Cobel\nS02E02 · Goodbye, Mrs. Selvig\nS02E03 · Who Is Alive?",
-			"reasons":  "Watchlist, Next Up",
+			"reasons":  "Next Up",
 		},
 	},
 	{
@@ -104,6 +104,19 @@ var notificationTypes = []notificationType{
 		Sample: map[string]string{
 			"title": "Dune: Part Two", "year": "2024", "title_year": "Dune: Part Two (2024)", "media_type": "Movie",
 		},
+	},
+	{
+		// Silo sends watchlist.available when a title the profile watchlisted
+		// before the library had it arrives, whether or not it was requested.
+		// Its title comes as series_title and its media_type in reason_flags.
+		Key:            "watchlist.available",
+		Label:          "Watchlist title available",
+		Description:    "A movie or show on your watchlist was added to the library.",
+		DefaultTitle:   "Now available",
+		DefaultMessage: "{title} from your watchlist is ready to watch.",
+		DefaultEnabled: true,
+		Placeholders:   append([]string{"title", "media_type"}, commonPlaceholders...),
+		Sample:         map[string]string{"title": "Dune: Part Two", "media_type": "Movie"},
 	},
 	{
 		Key:            otherTypeKey,

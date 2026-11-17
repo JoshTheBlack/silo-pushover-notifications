@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -358,24 +357,19 @@ type profileView struct {
 	AttachPoster bool                    `json:"attach_poster"`
 	IncludeLink  bool                    `json:"include_link"`
 	Types        map[string]TypeSettings `json:"types"`
-	// EpisodeReasons is the reason filter for new episodes (empty: all),
-	// GroupMinutes the season-drop window (0: off), and Quiet the profile's
-	// quiet hours, in the time zone the browser last reported.
-	EpisodeReasons []string   `json:"episode_reasons"`
-	GroupMinutes   int        `json:"group_minutes"`
-	Quiet          QuietHours `json:"quiet"`
-	TimeZone       string     `json:"time_zone"`
-	// EpisodeReasonOptions lists the reasons the filter offers.
-	EpisodeReasonOptions []option `json:"episode_reason_options"`
+	// GroupMinutes is the season-drop window (0: off), and Quiet the
+	// profile's quiet hours, in the time zone the browser last reported.
+	GroupMinutes int        `json:"group_minutes"`
+	Quiet        QuietHours `json:"quiet"`
+	TimeZone     string     `json:"time_zone"`
 }
 
 func newProfileView(prof siloProfile, s *ProfileSettings) profileView {
 	view := profileView{
 		ProfileID: prof.ID, ProfileName: prof.Name,
 		Enabled: true, AttachPoster: true, IncludeLink: true,
-		Types:          map[string]TypeSettings{},
-		EpisodeReasons: []string{}, Quiet: QuietHours{Start: defaultQuietStart, End: defaultQuietEnd},
-		EpisodeReasonOptions: episodeReasonOptions,
+		Types: map[string]TypeSettings{},
+		Quiet: QuietHours{Start: defaultQuietStart, End: defaultQuietEnd},
 	}
 	if s != nil {
 		view.Configured = true
@@ -384,9 +378,6 @@ func newProfileView(prof siloProfile, s *ProfileSettings) profileView {
 		view.AppTokenHint = keyHint(s.AppToken)
 		view.Device, view.Sound, view.Priority = s.Device, s.Sound, s.Priority
 		view.HTML, view.AttachPoster, view.IncludeLink = s.HTML, s.AttachPoster, s.IncludeLink
-		if len(s.EpisodeReasons) > 0 {
-			view.EpisodeReasons = s.EpisodeReasons
-		}
 		view.GroupMinutes, view.TimeZone = s.GroupMinutes, s.TimeZone
 		if s.Quiet != (QuietHours{}) {
 			view.Quiet = s.Quiet
@@ -434,12 +425,12 @@ type profileInput struct {
 	AttachPoster  bool                    `json:"attach_poster"`
 	IncludeLink   bool                    `json:"include_link"`
 	Types         map[string]TypeSettings `json:"types"`
-	// EpisodeReasons, GroupMinutes, TimeZone and Quiet are the 0.3.0 settings.
-	// An empty TimeZone (a browser that can't say) keeps the saved one.
-	EpisodeReasons []string   `json:"episode_reasons"`
-	GroupMinutes   int        `json:"group_minutes"`
-	TimeZone       string     `json:"time_zone"`
-	Quiet          QuietHours `json:"quiet"`
+	// GroupMinutes, TimeZone and Quiet are the 0.3.0 settings. An empty
+	// TimeZone (a browser that can't say) keeps the saved one. An
+	// episode_reasons field from 0.3.0 clients is ignored.
+	GroupMinutes int        `json:"group_minutes"`
+	TimeZone     string     `json:"time_zone"`
+	Quiet        QuietHours `json:"quiet"`
 }
 
 // applyInput merges input over the stored settings and validates the result.
@@ -482,21 +473,6 @@ func (p *Plugin) applyInput(v *viewer, prof siloProfile, existing *ProfileSettin
 		return nil, bad("Priority must be between -2 and 1.")
 	}
 
-	s.EpisodeReasons = nil
-	for _, r := range in.EpisodeReasons {
-		r = strings.TrimSpace(r)
-		if !slices.ContainsFunc(episodeReasonOptions, func(o option) bool { return o.Value == r }) {
-			return nil, bad("That isn't a reason Silo gives for a new episode.")
-		}
-		if !slices.Contains(s.EpisodeReasons, r) {
-			s.EpisodeReasons = append(s.EpisodeReasons, r)
-		}
-	}
-	// Keep the page's order so the same choice always stores the same way.
-	slices.SortFunc(s.EpisodeReasons, func(a, b string) int {
-		return cmp.Compare(slices.IndexFunc(episodeReasonOptions, func(o option) bool { return o.Value == a }),
-			slices.IndexFunc(episodeReasonOptions, func(o option) bool { return o.Value == b }))
-	})
 	if in.GroupMinutes != 0 && (in.GroupMinutes < minGroupMinutes || in.GroupMinutes > maxGroupMinutes) {
 		return nil, bad(fmt.Sprintf("Grouping: hold new episodes for between %d and %d minutes, or switch it off.", minGroupMinutes, maxGroupMinutes))
 	}

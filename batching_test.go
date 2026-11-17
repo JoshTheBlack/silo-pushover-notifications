@@ -140,7 +140,7 @@ func TestOldSettingsLoadUnchanged(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("Get: %v %v", found, err)
 	}
-	if len(s.EpisodeReasons) != 0 || s.GroupMinutes != 0 || s.Quiet.Enabled || s.TimeZone != "" || s.groupWindow() != 0 {
+	if s.GroupMinutes != 0 || s.Quiet.Enabled || s.TimeZone != "" || s.groupWindow() != 0 {
 		t.Fatalf("new fields should default to off: %+v", s)
 	}
 	// The profile's episodes are still sent one at a time, with its own wording.
@@ -155,7 +155,7 @@ func TestOldSettingsLoadUnchanged(t *testing.T) {
 
 	// Saving unchanged settings through the API stores nothing new.
 	_, out := h.request(t, http.MethodGet, "/api/profiles/p1", asPrimary, nil)
-	if out["group_minutes"] != float64(0) || len(out["episode_reasons"].([]any)) != 0 || out["quiet"].(map[string]any)["enabled"] != false {
+	if out["group_minutes"] != float64(0) || out["episode_reasons"] != nil || out["quiet"].(map[string]any)["enabled"] != false {
 		t.Fatalf("view of old settings: %v", out)
 	}
 	if status, out := h.request(t, http.MethodPut, "/api/profiles/p1", asPrimary, map[string]any{
@@ -185,12 +185,15 @@ func TestProfileSettingsAPI(t *testing.T) {
 		t.Fatalf("save: %d %v", status, out)
 	}
 	s, _, _ := h.plugin.store.Get(context.Background(), "p1")
-	if strings.Join(s.EpisodeReasons, ",") != "favorite,next_up" || s.GroupMinutes != 10 || s.TimeZone != "Europe/London" ||
+	if strings.Contains(string(h.state.values[bucketKey("p1")]), "episode_reasons") {
+		t.Fatal("a reason filter sent by an old page was stored")
+	}
+	if s.GroupMinutes != 10 || s.TimeZone != "Europe/London" ||
 		!s.Quiet.Enabled || s.Quiet.Start != "23:30" || s.Quiet.End != "06:15" {
 		t.Fatalf("saved %+v", s)
 	}
 	view := out["profile"].(map[string]any)
-	if view["group_minutes"] != float64(10) || view["time_zone"] != "Europe/London" || len(view["episode_reason_options"].([]any)) != 4 {
+	if view["group_minutes"] != float64(10) || view["time_zone"] != "Europe/London" || view["episode_reason_options"] != nil {
 		t.Fatalf("view %v", view)
 	}
 
@@ -198,12 +201,11 @@ func TestProfileSettingsAPI(t *testing.T) {
 	if status, out := put(map[string]any{"group_minutes": 3, "quiet": map[string]any{"enabled": true, "start": "23:30", "end": "06:15"}}); status != http.StatusOK {
 		t.Fatalf("save without zone: %d %v", status, out)
 	}
-	if s, _, _ := h.plugin.store.Get(context.Background(), "p1"); s.TimeZone != "Europe/London" || s.GroupMinutes != 3 || len(s.EpisodeReasons) != 0 {
+	if s, _, _ := h.plugin.store.Get(context.Background(), "p1"); s.TimeZone != "Europe/London" || s.GroupMinutes != 3 {
 		t.Fatalf("after a save without a zone: %+v", s)
 	}
 
 	for name, bad := range map[string]map[string]any{
-		"reason":        {"episode_reasons": []string{"popular"}},
 		"minutes low":   {"group_minutes": -1},
 		"minutes high":  {"group_minutes": 121},
 		"zone":          {"time_zone": "Not/AZone"},
@@ -242,50 +244,19 @@ func TestGroupWordingDefaultsStayUnset(t *testing.T) {
 	}
 }
 
-// --- Reason filter ---
+// --- Reason filter (retired) ---
 
-func TestReasonFilter(t *testing.T) {
+// Silo now notifies only for Next Up, so a reason filter saved by 0.3.0 would
+// drop every episode for a profile that didn't tick Next Up. It is ignored.
+func TestSavedReasonFilterIsIgnored(t *testing.T) {
 	h := newHarness(t)
-	h.configure(t, func(s *ProfileSettings) { s.EpisodeReasons = []string{reasonFavorite, reasonNextUp} })
-	flags := func(f map[string]any) map[string]any { return map[string]any{"reason_flags": f} }
+	h.state.values[bucketKey("p1")] = []byte(`{"p1":{"profile_id":"p1","profile_name":"Josh","user_id":7,"enabled":true,"user_key":"` +
+		testUserKey + `","episode_reasons":["favorite"],"types":{},"updated_at":"2026-11-01T00:00:00Z"}}`)
 	mustHandle(t, h.events,
-		groupEvt("e1", "d1", 1, 1, flags(map[string]any{"watchlist": true})),                      // not asked for
-		groupEvt("e2", "d2", 1, 2, flags(map[string]any{"watchlist": true, "next_up": true})),     // next up: sent
-		groupEvt("e3", "d3", 1, 3, flags(map[string]any{"favorite": true})),                       // favorite: sent
-		groupEvt("e4", "d4", 1, 4, flags(map[string]any{})),                                       // no reason at all
-		groupEvt("e5", "d5", 1, 5, flags(map[string]any{"continue_watching": true})),              // not asked for
-		episodeEvent("e6", "d6", map[string]any{"type": "request.approved", "reason_flags": nil}), // other types aren't filtered
-	)
-	got := h.pushover.messages()
-	if len(got) != 3 {
-		t.Fatalf("sent %d messages, want 3: %v", len(got), titles(got))
-	}
-	if got[0].Get("message") != "S01E02 · Episode 2" || got[1].Get("message") != "S01E03 · Episode 3" || got[2].Get("title") != "Request approved" {
-		t.Fatalf("sent %v", got)
-	}
-	// Filtered episodes are ignored, not recorded as handled.
-	if seen, _ := h.plugin.handled.Seen(context.Background(), "e1"); seen {
-		t.Fatal("a filtered episode was recorded")
-	}
-
-	// No filter: every episode, even one with no reasons.
-	h2 := newHarness(t)
-	h2.configure(t, nil)
-	mustHandle(t, h2.events, groupEvt("e1", "d1", 1, 1, map[string]any{"reason_flags": map[string]any{}}))
-	if n := len(h2.pushover.messages()); n != 1 {
-		t.Fatalf("with no filter sent %d", n)
-	}
-}
-
-func TestReasonFilterAppliesBeforeGrouping(t *testing.T) {
-	h := newHarness(t)
-	_, e := h.groupPlugin(t, h.state, func(s *ProfileSettings) { s.EpisodeReasons = []string{reasonFavorite} })
-	mustHandle(t, e,
-		groupEvt("e1", "d1", 1, 1, map[string]any{"reason_flags": map[string]any{"watchlist": true}}),
-		groupEvt("e2", "d2", 1, 2, map[string]any{"reason_flags": map[string]any{"favorite": true}}))
-	st := readPending(t, h.state)
-	if len(st.Groups) != 1 || len(st.Groups[0].Episodes) != 1 || st.Groups[0].Episodes[0].DeliveryID != "d2" {
-		t.Fatalf("pending %+v", st.Groups)
+		groupEvt("e1", "d1", 1, 1, map[string]any{"reason_flags": map[string]any{"next_up": true}}),
+		groupEvt("e2", "d2", 1, 2, map[string]any{"reason_flags": map[string]any{"watchlist": true}}))
+	if n := len(h.pushover.messages()); n != 2 {
+		t.Fatalf("sent %d, want both episodes", n)
 	}
 }
 
@@ -1028,7 +999,7 @@ func TestProfileAndAdminQuietHoursShareRules(t *testing.T) {
 
 func TestPageHasTheProfileSettings(t *testing.T) {
 	page := string(indexHTML)
-	for _, want := range []string{"data-reason", "groupOn", "groupMinutes", "pqOn", "pqStart", "pqEnd", "group_minutes", "episode_reasons", "grpTest", "default_group_title"} {
+	for _, want := range []string{"groupOn", "groupMinutes", "pqOn", "pqStart", "pqEnd", "group_minutes", "grpTest", "default_group_title"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the page has no %q", want)
 		}

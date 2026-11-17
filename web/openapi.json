@@ -203,7 +203,7 @@
         }
       },
       "Option": { "type": "object", "properties": { "value": { "type": "string" }, "label": { "type": "string" } } },
-      "NotificationTypeKey": { "type": "string", "enum": ["episode.available", "request.approved", "request.declined", "request.fulfilled", "other"] },
+      "NotificationTypeKey": { "type": "string", "enum": ["episode.available", "request.approved", "request.declined", "request.fulfilled", "watchlist.available", "other"] },
       "AlertKey": { "type": "string", "enum": ["stream.started", "stream.paused", "stream.stopped", "playback.failed", "streams.user", "streams.server", "bandwidth", "device.new", "ip.new", "scan.failed", "job.failed", "health", "health.recovered", "digest.weekly"] },
       "Priority": { "type": "integer", "minimum": -2, "maximum": 1, "description": "-2 lowest, -1 low (no sound), 0 normal, 1 high" },
       "AlertPriority": { "type": "integer", "minimum": -2, "maximum": 2, "description": "As Priority, plus 2: emergency, repeats every 60 s for up to an hour until acknowledged" },
@@ -235,7 +235,6 @@
           "attach_poster": { "type": "boolean" },
           "include_link": { "type": "boolean" },
           "types": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/TypeSettings" } },
-          "episode_reasons": { "type": "array", "items": { "type": "string", "enum": ["favorite", "watchlist", "continue_watching", "next_up"] }, "description": "Empty means every episode" },
           "group_minutes": { "type": "integer", "minimum": 0, "maximum": 120, "description": "0 is off" },
           "quiet": { "$ref": "#/components/schemas/QuietHours" },
           "time_zone": { "type": "string", "description": "IANA name; empty on save keeps the saved one" }
@@ -250,8 +249,7 @@
       "ProfileView": {
         "allOf": [ { "$ref": "#/components/schemas/ProfileCommon" }, { "type": "object", "properties": {
           "profile_id": { "type": "string" }, "profile_name": { "type": "string" }, "configured": { "type": "boolean" },
-          "user_key_hint": { "type": "string" }, "app_token_hint": { "type": "string" },
-          "episode_reason_options": { "type": "array", "items": { "$ref": "#/components/schemas/Option" } } } } ]
+          "user_key_hint": { "type": "string" }, "app_token_hint": { "type": "string" } } } ]
       },
       "NotificationType": {
         "type": "object",

@@ -453,10 +453,8 @@
   }
 
   function normalizeDraft() {
-    draft.episode_reasons = draft.episode_reasons || [];
     draft.group_minutes = draft.group_minutes || 0;
     draft.quiet = { enabled: false, start: "22:00", end: "07:00", silence_emergency: false, ...(draft.quiet || {}) };
-    draft.episode_reason_options = draft.episode_reason_options || [];
     lastGroupMinutes = draft.group_minutes || 5;
   }
 
@@ -548,11 +546,6 @@
     on("#removeBtn", "click", removeProfile);
   }
 
-  function reasonPills() {
-    return draft.episode_reason_options.map((o) =>
-      `<label class="pill"><input type="checkbox" data-reason="${esc(o.value)}"${draft.episode_reasons.includes(o.value) ? " checked" : ""}>${esc(o.label)}</label>`).join("");
-  }
-
   // The grouped wording only exists for types that can be merged (new episodes).
   function groupType() { return state.types.find((t) => t.default_group_title); }
 
@@ -564,8 +557,7 @@
       <div style="display:flex;flex-direction:column;gap:16px">
       <section class="card">
         <h2>New episodes</h2>
-        <div class="field"><span class="lbl">Only when the show is in my <span class="muted" style="font-weight:400">(none = every episode)</span></span>
-          <div class="pills">${reasonPills()}</div></div>
+        <span class="help">Silo tells you about a new episode when it becomes your Next Up for that show.</span>
         <div class="flexrow">
           <label class="sw"><input type="checkbox" id="groupOn"${on ? " checked" : ""}>Group a season drop into one push</label>
           <label class="inline" id="groupField"${on ? "" : " hidden"}>wait<input type="number" class="num" id="groupMinutes" min="1" max="120" step="1" inputmode="numeric" value="${esc(on ? draft.group_minutes : "")}" aria-label="Minutes to wait for more episodes">min</label>
@@ -662,11 +654,6 @@
 
   function bindMine() {
     const on = (sel, ev, fn) => { const e = $(sel); if (e) e.addEventListener(ev, fn); };
-    $$("#panel-mine [data-reason]").forEach((c) => c.addEventListener("change", () => {
-      draft.episode_reasons = draft.episode_reasons.filter((v) => v !== c.dataset.reason);
-      if (c.checked) draft.episode_reasons.push(c.dataset.reason);
-      markDirty();
-    }));
     on("#groupOn", "change", (e) => {
       draft.group_minutes = e.target.checked ? lastGroupMinutes || 5 : 0;
       $("#groupField").hidden = !e.target.checked;
@@ -742,7 +729,7 @@
       clear_app_token: draft.clear_app_token, device: draft.device, sound: draft.sound,
       priority: draft.priority, html: draft.html, attach_poster: draft.attach_poster,
       include_link: draft.include_link, types: draft.types,
-      episode_reasons: draft.episode_reasons, group_minutes: draft.group_minutes,
+      group_minutes: draft.group_minutes,
       quiet: draft.quiet, time_zone: browserZone(),
     };
   }

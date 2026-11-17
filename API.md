@@ -86,15 +86,18 @@ One profile's settings. Keys are never returned, only hints
 Fields: `enabled`, `device`, `sound`, `priority` (-2 to 1), `html`,
 `attach_poster`, `include_link`, `types` (per type: `enabled`, `title`,
 `message`, optional `sound`, `priority`, and for `episode.available`
-`group_title`, `group_message`), `episode_reasons` (any of `favorite`,
-`watchlist`, `continue_watching`, `next_up`; empty means all), `group_minutes`
+`group_title`, `group_message`), `group_minutes`
 (0 = off, 1 to 120), `quiet` (`enabled`, `start`, `end` as `HH:MM`,
 `silence_emergency`), `time_zone` (IANA name). Admin alerts follow the quiet
 hours of the admin's own profile, so `silence_emergency` (also turn emergency
 admin alerts down) is kept only on that profile.
 
 Notification types: `episode.available`, `request.approved`,
-`request.declined`, `request.fulfilled`, `other`.
+`request.declined`, `request.fulfilled`, `watchlist.available`, `other`.
+
+The `episode_reasons` filter of 0.3.0 is gone: Silo now notifies only when an
+episode becomes the profile's Next Up. A save that still sends it is accepted
+and the field is ignored.
 
 ### `PUT api/profiles/{profile_id}`
 

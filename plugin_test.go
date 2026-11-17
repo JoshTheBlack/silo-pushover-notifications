@@ -459,6 +459,29 @@ func TestDeliveryVars(t *testing.T) {
 	}
 }
 
+// Silo's watchlist.available names the title in series_title and the item in
+// series_id; the plugin gives it its own wording and links to the title.
+func TestWatchlistArrival(t *testing.T) {
+	h := newHarness(t)
+	h.configure(t, func(s *ProfileSettings) { s.IncludeLink = true })
+	mustHandle(t, h.events, episodeEvent("w1", "d1", map[string]any{
+		"type": "watchlist.available", "series_title": "Dune: Part Two", "series_id": "m1",
+		"reason_flags": map[string]any{"tmdb_id": 693134, "media_type": "movie"},
+	}))
+	sent := h.pushover.messages()
+	if len(sent) != 1 {
+		t.Fatalf("sent %d", len(sent))
+	}
+	m := sent[0]
+	if m.Get("title") != "Now available" || m.Get("message") != "Dune: Part Two from your watchlist is ready to watch." ||
+		m.Get("url") != "https://silo.example.com/item/m1" {
+		t.Fatalf("sent %v", m)
+	}
+	if v := deliveryVars(delivery{Type: "watchlist.available", SeriesTitle: "Severance", ReasonFlags: json.RawMessage(`{"media_type":"series"}`)}, ""); v["media_type"] != "Series" || v["title"] != "Severance" {
+		t.Fatalf("vars %v", v)
+	}
+}
+
 func TestStorePersistsAcrossReload(t *testing.T) {
 	state := &memoryState{values: map[string][]byte{}}
 	s := newProfileStore(state)

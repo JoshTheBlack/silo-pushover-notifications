@@ -43,10 +43,6 @@ type ProfileSettings struct {
 	// The fields below came with 0.3.0. Settings saved by 0.2.0 don't have
 	// them and load with everything off.
 
-	// EpisodeReasons limits new-episode notifications to episodes Silo lists
-	// at least one of these reasons for (reasonFavorite and so on). Empty
-	// means every episode.
-	EpisodeReasons []string `json:"episode_reasons,omitempty"`
 	// GroupMinutes holds a show's first new episode for this many minutes and
 	// merges the ones that follow into one notification. Zero sends each
 	// episode on its own.
@@ -58,7 +54,11 @@ type ProfileSettings struct {
 	Quiet QuietHours `json:"quiet,omitzero"`
 }
 
-// Reasons Silo gives for a new episode (reason_flags on episode.available).
+// Reasons a new episode's reason_flags can carry. Silo used to notify for
+// favorites, the watchlist and Continue Watching too; since late 2026 it
+// notifies only when an episode becomes the profile's Next Up, so new
+// deliveries carry next_up alone. The old flags are still read for {reasons}.
+// A reason filter that 0.3.0 saved as episode_reasons is ignored.
 const (
 	reasonFavorite         = "favorite"
 	reasonWatchlist        = "watchlist"
@@ -70,14 +70,6 @@ const (
 	// defaultGroupMinutes is what the page offers when grouping is switched on.
 	defaultGroupMinutes = 5
 )
-
-// episodeReasonOptions are the reasons the page offers, in its order.
-var episodeReasonOptions = []option{
-	{reasonFavorite, "Favorites"},
-	{reasonWatchlist, "Watchlist"},
-	{reasonContinueWatching, "Continue Watching"},
-	{reasonNextUp, "Next Up"},
-}
 
 // TypeSettings controls one notification type for a profile.
 type TypeSettings struct {
@@ -110,21 +102,6 @@ func (s *ProfileSettings) typeSettings(key string) TypeSettings {
 	return notificationTypeByKey(key).defaults()
 }
 
-// wantsEpisode reports whether the profile's reason filter lets an episode
-// with these reasons through.
-func (s *ProfileSettings) wantsEpisode(f deliveryFlags) bool {
-	if len(s.EpisodeReasons) == 0 {
-		return true
-	}
-	for _, r := range s.EpisodeReasons {
-		if (r == reasonFavorite && f.Favorite) || (r == reasonWatchlist && f.Watchlist) ||
-			(r == reasonContinueWatching && f.ContinueWatching) || (r == reasonNextUp && f.NextUp) {
-			return true
-		}
-	}
-	return false
-}
-
 // groupWindow is how long a show's first new episode is held; zero when the
 // profile doesn't group.
 func (s *ProfileSettings) groupWindow() time.Duration {
@@ -143,7 +120,6 @@ func (s *ProfileSettings) priorityAt(priority int, at time.Time) int {
 func (s *ProfileSettings) clone() *ProfileSettings {
 	c := *s
 	c.Types = maps.Clone(s.Types)
-	c.EpisodeReasons = slices.Clone(s.EpisodeReasons)
 	return &c
 }
 
